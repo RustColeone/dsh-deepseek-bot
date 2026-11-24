@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { dshBrain } from '../plugin/brain.js'
+import { nodeBrain } from '../plugin/node-brain.js'
 import { computerTools } from '../lib/tools.js'
 
 function fakeDsh () {
@@ -29,7 +30,11 @@ function fakeDsh () {
             await new Promise(resolve => setTimeout(resolve, 200))
             if (agent.stopped) { emit('session/event', session, { type: 'turn/end', data: { reason: { kind: 'aborted' } } }); return }
           }
-          if (text.includes('computers')) {
+          if (text.includes('post a file')) {
+            const value = await tools.get('chat_send_file').execute({ path: 'C:/out/result.mp4' }, { agent, signal: new AbortController().signal })
+            const said = `Posted ${value.name}.`
+            emit('session/event', session, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: said }] } } })
+          } else if (text.includes('computers')) {
             emit('session/event', session, { type: 'tool/call', data: { callId: 'c1', name: 'computers_list', arguments: '{}' } })
             const value = await tools.get('computers_list').execute({}, { agent, signal: new AbortController().signal })
             emit('session/event', session, { type: 'tool/result', data: { message: { content: JSON.stringify(value) } } })
@@ -70,7 +75,7 @@ function fakeDsh () {
   }
   const ctx = {
     on, emit, calls, sessions,
-    agentPresets: { register: async preset => { calls.preset = preset; return async () => {} }, mount: async (agentCtx, id) => { calls.mounted.push(id) } },
+    agentPresets: { register: async preset => { calls.preset = preset; (calls.presets ??= []).push(preset); return async () => { calls.unregistered = (calls.unregistered || 0) + 1 } }, mount: async (agentCtx, id) => { calls.mounted.push(id) } },
     agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-flash' }) },
     sessionQuery: {
       observeSession: async id => {
@@ -158,4 +163,44 @@ test('a group chat tells the bot what others said since it last spoke', async ()
   assert.match(text, /\[Said in this chat since you last spoke\]\nleo: upscale this video\nDeepSeek: Whale has the GPU\./)
   assert.match(text, /\[Now, leo\]\n@Whale what do you think\?/)
   fs.rmSync(workspace, { recursive: true, force: true })
+})
+
+test("a node's own agents: its bots (kept across restarts), tasks, and posting files to the chat", async () => {
+  const ctx = fakeDsh()
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-hub-node-brain-'))
+  const options = { folder, inbox: path.join(folder, 'inbox'), createUserMessage, permission: 'workspace-write',
+    bots: [{ display: 'ROG', description: 'the gaming PC' }] }
+  const brain = await nodeBrain(ctx, options)
+  assert.deepEqual(ctx.calls.presets.map(preset => preset.id), ['dsh-hub-task', 'dsh-hub-node-rog'])
+  const rogPreset = ctx.calls.presets[1]
+  assert.match(rogPreset.plugins[0].config.prefix, /You live on .*, one of the owner's computers/)
+  assert.ok(rogPreset.plugins.some(plugin => plugin.name === (process.platform === 'win32' ? '@deepseek-ai/dsh-tool-pwsh' : '@deepseek-ai/dsh-tool-bash')))
+
+  const bot = await brain.create({ display: 'Pi Bot', description: 'small', prompt: 'You are tiny.' })
+  assert.equal(bot.name, 'pi-bot')
+  assert.deepEqual(brain.bots().map(item => item.name), ['rog', 'pi-bot'])
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(folder, 'bots.json'), 'utf8')).map(item => item.name), ['pi-bot'])
+
+  const posted = []
+  const run = (mode, text, session) => brain.run({ mode, bot: 'rog', session, text, sink: sink(), signal: new AbortController().signal,
+    approve: async () => 'approved', postFile: async where => { posted.push(where); return { file: { name: 'result.mp4' }, size: 3 } } })
+  const reply = await run('reply', 'hello')
+  assert.equal(reply.text, 'Hello from DSH')
+  assert.match(reply.session, /^hub-bot-/)
+  assert.equal((await run('reply', 'again', reply.session)).session, reply.session)
+  assert.equal(ctx.calls.create, 1)
+  const task = await run('task', 'please post a file')
+  assert.match(task.session, /^hub-task-/)
+  assert.equal(task.text, 'Posted result.mp4.')
+  assert.deepEqual(posted, ['C:/out/result.mp4'])
+  assert.ok(ctx.calls.mounted.includes('dsh-hub-task'))
+  await assert.rejects(brain.run({ mode: 'reply', bot: 'nobody', text: 'x', sink: sink() }), /no bot nobody/)
+
+  // Restarted, it still has the bot the owner added; removing it unregisters its preset.
+  const again = await nodeBrain(ctx, options)
+  assert.deepEqual(again.bots().map(item => item.display), ['ROG', 'Pi Bot'])
+  await again.remove('pi-bot')
+  assert.deepEqual(again.bots().map(item => item.name), ['rog'])
+  await assert.rejects(again.remove('rog'), /own config/)
+  fs.rmSync(folder, { recursive: true, force: true })
 })

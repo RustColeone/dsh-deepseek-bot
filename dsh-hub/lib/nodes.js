@@ -7,10 +7,20 @@
 //
 // The wire (JSON, one object per message):
 //   hub → node   { t: 'call', id, op, args }         op: info | exec | download | upload | cancel | jobs
+//                                                    | agent | bot.create | bot.remove
+//                { t: 'reply', id, ok, value, error } the answer to a node's request
 //   node → hub   { t: 'result', id, ok, value, error }
-//                { t: 'hello', info, jobs }          first, and again after every reconnect
+//                { t: 'hello', info, jobs }          first, and again after every reconnect (info.bots: its bots)
+//                { t: 'bots', bots }                 its bots changed
 //                { t: 'job', job, event: 'output', stream, data }
 //                { t: 'job', job, event: 'exit', code, error, cancelled, result }
+//                { t: 'run', run, event: 'stream', text } | { …, event: 'activity', line } | { …, event: 'end', text, session, error }
+//                { t: 'request', id, run, op, args } op: ask (an approval card) | post_file (a ticket to post a file)
+//
+// Agents on a node: a computer running DSH has bots of its own (each a DSH agent there, with that computer's own model
+// account and tools), and takes on tasks a hub bot hands it (computer_delegate). Either is a run: the hub sends
+// `agent` with a run id, and the node streams the run back and asks the hub for what it needs (approval cards in the
+// chat, posting a file there). A task is also a job, so it has a card; a bot's reply streams like a hub bot's.
 //
 // A job is one command run on a node, or one file moved between the hub and a node. Its output is kept here (the
 // last 256 KB of it) while it runs and after, so a chat can look at it later; the node keeps at it if the connection
@@ -107,7 +117,8 @@ export class Nodes {
     this.onJob = onJob
     this.links = new Map() // node id -> { ws, info, calls: Map }
     this.jobs = new Map()
-    this.tickets = new Map() // SHA-256 of a ticket -> { node, way: 'down' | 'up', file, job, owner, limit, expires }
+    this.tickets = new Map() // SHA-256 of a ticket -> { node, way: 'down' | 'up', file, job, run, owner, limit, onFile, expires }
+    this.runs = new Map() // run id -> { node, sink, ask, onFile, resolve, reject, job }
     this.enrolls = new Throttle({ limit: 10, window: 600, lock: 600 })
   }
 
@@ -170,6 +181,7 @@ export class Nodes {
       if (this.links.get(node.id) !== link) return
       this.links.delete(node.id)
       for (const { reject, timer } of link.calls.values()) { clearTimeout(timer); reject(new Error('the computer went offline')) }
+      for (const [id, run] of this.runs) if (run.node === node.id) this.#endRun(id, { error: `${node.name} went offline` })
       this.store.updateNode(node.id, { seen: now() })
       this.log('node_offline', { name: node.name })
       this.onChange()
@@ -187,7 +199,19 @@ export class Nodes {
   }
 
   #receive (id, link, message) {
-    if (message.t === 'hello') {
+    if (message.t === 'bots') {
+      link.info = { ...link.info, bots: clean({ bots: message.bots }).bots ?? [] }
+      this.store.updateNode(id, { info: link.info })
+      this.onChange()
+    } else if (message.t === 'run') {
+      const run = this.runs.get(message.run)
+      if (!run || run.node !== id) return
+      if (message.event === 'stream') run.sink?.stream(String(message.text ?? ''))
+      else if (message.event === 'activity') run.sink?.activity(String(message.line ?? ''))
+      else if (message.event === 'end') this.#endRun(message.run, message)
+    } else if (message.t === 'request') {
+      this.#request(id, link, message)
+    } else if (message.t === 'hello') {
       link.info = clean(message.info)
       this.store.updateNode(id, { info: link.info, seen: now() })
       this.#resync(id, Array.isArray(message.jobs) ? message.jobs : [])
@@ -246,6 +270,35 @@ export class Nodes {
     this.onJob(job, 'exit')
   }
 
+  /** A node's run asks the hub for something: an approval card, or a ticket to post a file in the chat. */
+  async #request (id, link, { id: requestId, run: runId, op, args = {} }) {
+    const answer = (ok, value, error) => { try { link.ws.send(JSON.stringify({ t: 'reply', id: requestId, ok, value, error })) } catch { /* gone */ } }
+    const run = this.runs.get(runId)
+    if (!run || run.node !== id) return answer(false, null, 'that run is over')
+    try {
+      if (op === 'ask') {
+        const decision = run.ask ? await run.ask({ tool: String(args.tool || 'a tool'), summary: String(args.summary || ''),
+          detail: String(args.detail || '').slice(0, 4000) }) : 'denied'
+        return answer(true, { decision })
+      }
+      if (op === 'post_file') {
+        if (!run.onFile) return answer(false, null, 'files can\'t be posted from here')
+        const ticket = this.#ticket({ node: id, way: 'up', run: runId, owner: run.owner, limit: run.limit, onFile: run.onFile })
+        return answer(true, { ticket, limit: run.limit })
+      }
+      answer(false, null, `unknown request ${op}`)
+    } catch (error) { answer(false, null, error.message) }
+  }
+
+  #endRun (runId, { text, session, error } = {}) {
+    const run = this.runs.get(runId)
+    if (!run) return
+    this.runs.delete(runId)
+    for (const [hash, ticket] of this.tickets) if (ticket.run === runId) this.tickets.delete(hash)
+    if (error) run.reject(new Error(String(error)))
+    else run.resolve({ text: String(text ?? ''), session: session ? String(session) : null })
+  }
+
   call (id, op, args = {}, seconds = CALL_SECONDS) {
     const link = this.links.get(id)
     if (!link) return Promise.reject(new Error('that computer is offline'))
@@ -259,6 +312,56 @@ export class Nodes {
 
   // ---- what the hub and its tools use ---------------------------------------------------------------
   online (id) { return this.links.has(id) }
+
+  /** The bots living on the computers: as the hub lists them, named "@<node id>/<bot>". */
+  bots () {
+    return this.store.nodes().flatMap(node => {
+      const info = this.links.get(node.id)?.info ?? node.info
+      return (Array.isArray(info.bots) ? info.bots : []).map(bot => ({
+        name: `@${node.id}/${bot.name}`, display: String(bot.display || bot.name), node: node.id, nodeName: node.name,
+        local: String(bot.name), online: this.links.has(node.id),
+        description: `${bot.description ? `${bot.description} ` : ''}(lives on ${node.name})`,
+      }))
+    })
+  }
+
+  /**
+   * Run a DSH agent on a node: a bot's reply (mode 'reply', with `bot`) or a task (mode 'task'). Resolves
+   * { text, session }. `sink` gets its stream and activity, `ask` its approval requests, `onFile` files it posts.
+   */
+  agent ({ node, id, mode, bot, session, text, sink, signal, ask, onFile, owner, limit }) {
+    const runId = id || `r${crypto.randomBytes(5).toString('hex')}`
+    return new Promise((resolve, reject) => {
+      this.runs.set(runId, { node: node.id, sink, ask, onFile, owner, limit, resolve, reject })
+      const stop = () => { this.call(node.id, 'cancel', { run: runId }).catch(() => {}) }
+      signal?.addEventListener('abort', stop, { once: true })
+      this.call(node.id, 'agent', { run: runId, mode, bot, session: session || undefined, text })
+        .catch(error => this.#endRun(runId, { error: error.message }))
+    })
+  }
+
+  /** Hand a task to an agent on a node, as a job (its card shows what the agent does). The job's result: { text, session }. */
+  async delegate ({ node, task, session, by, owner, chat, bot, ask, onFile, limit }) {
+    const job = this.#job({ kind: 'agent', node, command: task.length > 300 ? task.slice(0, 300) + '…' : task, by, owner, chat, bot })
+    job.status = 'running'
+    let last = ''
+    const sink = {
+      stream: () => {},
+      activity: line => {
+        if (!line || line === last) return
+        last = line
+        job.add(`· ${line}\n`)
+        this.onJob(job, 'output')
+      },
+    }
+    const controller = new AbortController()
+    job.abort = controller
+    this.onJob(job, 'start')
+    this.agent({ node, id: job.id, mode: 'task', session, text: task, sink, signal: controller.signal, ask, onFile, owner, limit }).then(
+      result => { job.add(`\n${result.text}\n`); job.finish('done', { code: 0, result }); this.onJob(job, 'exit') },
+      error => { job.finish(controller.signal.aborted ? 'cancelled' : 'failed', { error: error.message }); this.onJob(job, 'exit') })
+    return job
+  }
 
   list () {
     return this.store.nodes().map(node => ({
@@ -333,11 +436,12 @@ export class Nodes {
     return this.#start(job, 'upload', { ticket, path: where, limit })
   }
 
-  /** What a ticket a node shows allows, or null: it must be this node's, this way's, unexpired, for a live job. */
+  /** What a ticket a node shows allows, or null: it must be this node's, this way's, unexpired, for a live job or run. */
   ticket (node, value, way) {
     if (!node || !TICKET.test(String(value || ''))) return null
     const ticket = this.tickets.get(sha256(String(value)))
     if (!ticket || ticket.node !== node.id || ticket.way !== way || ticket.expires < now()) return null
+    if (ticket.run) return this.runs.has(ticket.run) ? { ...ticket } : null
     const job = this.jobs.get(ticket.job)
     if (!job || job.done) return null
     return { ...ticket, job }
@@ -354,6 +458,7 @@ export class Nodes {
   async cancel (id) {
     const job = this.jobs.get(id)
     if (!job || job.done) return job
+    if (job.abort) { job.abort.abort(); return job } // a task: the agent's run is stopped
     try { await this.call(job.node, 'cancel', { job: id }) } catch (error) { job.finish('cancelled', { error: error.message }) }
     return job
   }

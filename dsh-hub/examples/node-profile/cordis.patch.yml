@@ -10,3 +10,10 @@
       files: any         # files the hub may take: any, folders (with folders: ["~/Videos"]) or never
       # inbox: ~/Videos/from-hub   # where files sent from the hub land
     tools: [video2x, ffmpeg]   # also report where these are
+      bots: any          # the hub's owner may add bots to live here (own: only those below)
+      tasks: any         # hub bots may hand this computer tasks (never: they can't)
+    bots:                # bots that live here (DSH only), besides those added from the hub's page
+      - display: ROG
+        description: The gaming PC with the big GPU
+        prompt: You are ROG, a gaming PC who loves video work. You keep answers short and a little cheeky.
+    permission: workspace-write   # its agents' DSH permissions; DSH's approvals show up as cards in the hub's chat

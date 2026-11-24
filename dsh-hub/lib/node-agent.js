@@ -10,6 +10,12 @@
 //                 (only those in policy.folders, and the inbox: the default otherwise) or 'never' (none, and it
 //                 receives none either)
 //   policy.inbox  where files the hub sends are put (~/.dsh-hub/inbox); a name already there gets " (2)" and so on
+//   policy.bots   whether the hub may add bots to live here: 'any' (the default) or 'own' (only the bots in this
+//                 computer's own config); and policy.tasks: whether hub bots may hand this computer tasks ('any', 'never')
+//
+// Agents (only when DSH runs this node: its plugin gives a `brain`, node-brain.js): bots that live here and tasks
+// the hub hands over, each a DSH agent on this computer, with this computer's own model account, tools and approvals.
+// The hub sends `agent`; this streams the run back, and asks the hub for approval cards and for posting files.
 //
 // A job keeps running if the connection drops; its output is kept (the last 64 KB) and the hub hears how it went
 // when it is back. Finished jobs are forgotten after an hour. Moving a file is a job too: a download from the hub
@@ -210,6 +216,24 @@ export class NodeAgent {
     this.stopped = false
     this.ws = null
     this.inboxFolder = inbox
+    this.brain = null
+    this.runs = new Map() // run id -> AbortController
+    this.requests = new Map() // request id -> { resolve, reject }
+  }
+
+  /** DSH's agents for this computer (or null): its bots and tasks. The hub hears of the change. */
+  setBrain (brain) {
+    this.brain = brain
+    this.#hello().catch(() => {})
+  }
+
+  async #hello () {
+    if (this.ws?.readyState !== WebSocket.OPEN) return
+    this.#send({ t: 'hello', info: await this.#info(), jobs: this.#report() })
+  }
+
+  async #info () {
+    return { ...await describe(this.config.tools), inbox: this.inbox, agents: Boolean(this.brain), bots: this.brain?.bots() ?? [] }
   }
 
   start () { this.stopped = false; this.#open() }
@@ -230,12 +254,19 @@ export class NodeAgent {
     ws.on('open', async () => {
       this.retry = 0
       this.log('connected', { hub: this.config.hub })
-      ws.send(JSON.stringify({ t: 'hello', info: await describe(this.config.tools), jobs: this.#report() }))
+      ws.send(JSON.stringify({ t: 'hello', info: await this.#info(), jobs: this.#report() }))
     })
     ws.on('message', data => {
       let message
       try { message = JSON.parse(String(data)) } catch { return }
       if (message.t === 'call') this.#call(message)
+      else if (message.t === 'reply') {
+        const request = this.requests.get(message.id)
+        if (!request) return
+        this.requests.delete(message.id)
+        if (message.ok) request.resolve(message.value)
+        else request.reject(new Error(String(message.error || 'the hub refused')))
+      }
     })
     ws.on('unexpected-response', (request, response) => {
       this.log('refused', { status: response.statusCode })
@@ -247,6 +278,10 @@ export class NodeAgent {
     ws.on('close', code => {
       if (this.ws !== ws) return
       this.ws = null
+      // a run streams to the hub: without it there is nobody to answer, so it stops
+      for (const controller of this.runs.values()) controller.abort()
+      for (const request of this.requests.values()) request.reject(new Error('the hub is gone'))
+      this.requests.clear()
       if (this.stopped) return
       if (code === 4403) { this.log('removed', { hint: 'This computer was removed from the hub.' }); return }
       const delay = Math.min(30000, 1000 * 2 ** this.retry++) * (0.75 + Math.random() / 2)
@@ -267,9 +302,35 @@ export class NodeAgent {
     }
   }
 
+  /** Ask the hub something on behalf of a run. */
+  #request (run, op, args, seconds = 3600) {
+    if (this.ws?.readyState !== WebSocket.OPEN) return Promise.reject(new Error('the hub is gone'))
+    const id = crypto.randomUUID()
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.requests.delete(id); reject(new Error('the hub did not answer')) }, seconds * 1000)
+      this.requests.set(id, { resolve: value => { clearTimeout(timer); resolve(value) }, reject: error => { clearTimeout(timer); reject(error) } })
+      this.#send({ t: 'request', id, run, op, args })
+    })
+  }
+
   async #do (op, args) {
-    if (op === 'info') return describe(this.config.tools)
+    if (op === 'info') return this.#info()
     if (op === 'jobs') return this.#report()
+    if (op === 'agent') return this.#agent(args)
+    if (op === 'bot.create') {
+      if (!this.brain) throw new Error('this computer runs no DSH, so no bot can live here')
+      if ((this.config.policy?.bots ?? 'any') !== 'any') throw new Error("this computer's policy keeps its bots to its own config")
+      const bot = await this.brain.create(args)
+      this.#send({ t: 'bots', bots: this.brain.bots() })
+      return bot
+    }
+    if (op === 'bot.remove') {
+      if (!this.brain) throw new Error('this computer runs no DSH')
+      await this.brain.remove(String(args.name || ''))
+      this.#send({ t: 'bots', bots: this.brain.bots() })
+      return { ok: true }
+    }
+    if (op === 'cancel' && args.run) { this.runs.get(args.run)?.abort(); return { ok: true } }
     if (op === 'cancel') {
       const job = this.jobs.get(args.job)
       if (job && job.status === 'running') {
@@ -410,27 +471,76 @@ export class NodeAgent {
     job.abort = new AbortController()
     const report = progress(job, stat.size, 'sent')
     this.log('upload', { job: id, path: where })
+    this.#send_file(where, ticket, { limit, signal: job.abort.signal, report }).then(
+      sent => job.finish(0, '', { path: where, name: path.basename(where), size: sent.size, sha256: sent.sha256, file: sent.file?.id }),
+      error => job.finish(null, job.cancelled ? 'stopped' : error.message))
+    return { ok: true }
+  }
+
+  /** A run of an agent here: a bot's reply, or a task. Streams back as { t: 'run' } messages. */
+  #agent ({ run: id, mode, bot, session, text }) {
+    if (!this.brain) throw new Error('this computer runs no DSH, so it has no agents')
+    if (typeof id !== 'string' || !/^[rj][0-9a-f]{10}$/.test(id)) throw new Error('bad run id')
+    if (this.runs.has(id)) return { ok: true }
+    if (mode === 'task' && (this.config.policy?.tasks ?? 'any') === 'never') throw new Error("this computer's policy takes no tasks from the hub")
+    if (mode === 'reply' && !this.brain.bots().some(item => item.name === bot)) throw new Error(`no bot ${bot} lives here`)
+    const controller = new AbortController()
+    this.runs.set(id, controller)
+    let streamed = 0
+    let pending = null
+    const sink = {
+      stream: said => {
+        pending = said
+        const at = Date.now()
+        if (at - streamed < 100) return
+        streamed = at
+        this.#send({ t: 'run', run: id, event: 'stream', text: pending })
+        pending = null
+      },
+      activity: line => this.#send({ t: 'run', run: id, event: 'activity', line: String(line).slice(0, 200) }),
+    }
+    const approve = async ({ tool, summary, detail }) => {
+      try { return (await this.#request(id, 'ask', { tool, summary, detail })).decision } catch { return 'cancelled' }
+    }
+    const postFile = async given => {
+      const where = expand(String(given), this.config.policy?.cwd || os.homedir())
+      const why = fileRefusal(this.config.policy, where, this.inbox)
+      if (why) throw new Error(why)
+      const { ticket, limit } = await this.#request(id, 'post_file', { name: path.basename(where) })
+      return this.#send_file(where, ticket, { limit, signal: controller.signal })
+    }
+    this.log('agent', { run: id, mode, bot })
+    this.brain.run({ mode, bot, session, text, sink, signal: controller.signal, approve, postFile }).then(
+      result => this.#send({ t: 'run', run: id, event: 'end', text: result.text, session: result.session }),
+      error => this.#send({ t: 'run', run: id, event: 'end', error: controller.signal.aborted ? 'stopped' : String(error?.message || error) }),
+    ).finally(() => this.runs.delete(id))
+    return { ok: true }
+  }
+
+  /** Send a file to the hub with a ticket. Resolves { file, size, sha256 } once the hub has the same bytes. */
+  async #send_file (where, ticket, { limit, signal, report = () => {} } = {}) {
+    let stat
+    try { stat = fs.statSync(where) } catch { throw new Error(`there is no file ${where} on this computer`) }
+    if (!stat.isFile()) throw new Error(`${where} is a folder, not a file: zip it first`)
+    if (limit && stat.size > limit) throw new Error(`${where} is ${megabytes(stat.size)}; the hub takes at most ${megabytes(limit)}`)
     const name = path.basename(where)
     const url = `${this.config.hub}/api/nodes/upload?ticket=${encodeURIComponent(ticket)}&name=${encodeURIComponent(name)}`
-    ;(async () => {
-      const hash = crypto.createHash('sha256')
-      let done = 0
-      const source = fs.createReadStream(where)
-      const counted = Readable.from((async function * () {
-        for await (const chunk of source) { hash.update(chunk); done += chunk.length; report(done); yield chunk }
-      })())
-      const response = await fetch(url, {
-        method: 'POST', body: counted, duplex: 'half', signal: job.abort.signal,
-        headers: { ...this.#auth(), 'Content-Type': 'application/octet-stream' },
-      })
-      const answer = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(answer.error || `the hub said ${response.status}`)
-      report(done, true)
-      const sha256 = hash.digest('hex')
-      if (answer.sha256 !== sha256) throw new Error("the hub's copy differs from this computer's (SHA-256)")
-      return { path: where, name, size: done, sha256, file: answer.file?.id }
-    })().then(result => job.finish(0, '', result), error => job.finish(null, job.cancelled ? 'stopped' : error.message))
-    return { ok: true }
+    const hash = crypto.createHash('sha256')
+    let done = 0
+    const source = fs.createReadStream(where)
+    const counted = Readable.from((async function * () {
+      for await (const chunk of source) { hash.update(chunk); done += chunk.length; report(done); yield chunk }
+    })())
+    const response = await fetch(url, {
+      method: 'POST', body: counted, duplex: 'half', signal,
+      headers: { ...this.#auth(), 'Content-Type': 'application/octet-stream' },
+    })
+    const answer = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(answer.error || `the hub said ${response.status}`)
+    report(done, true)
+    const sha256 = hash.digest('hex')
+    if (answer.sha256 !== sha256) throw new Error("the hub's copy differs from this computer's (SHA-256)")
+    return { file: answer.file, size: done, sha256, path: where }
   }
 
   #report () {

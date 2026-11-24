@@ -95,3 +95,11 @@
   .field { flex-direction: column; align-items: stretch; gap: 4px; }
   .field-label { width: auto; }
 }
+
+/* bots that live on a computer */
+.picker-home { margin-left: auto; color: var(--muted, #8a7f76); font-size: .8rem; }
+.member.is-offline { opacity: .55; }
+.node-bots { margin: 8px 0 4px; padding: 0; list-style: none; }
+.node-bots li { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.node-bots li .muted { flex: 1; }
+.add-bot { margin-top: 6px; }

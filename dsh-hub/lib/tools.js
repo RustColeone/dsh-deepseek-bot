@@ -18,7 +18,8 @@ function summary (node) {
     name: node.name, online: node.online, policy: node.policy, running_jobs: node.running,
     system: [info.os || info.platform, info.arch].filter(Boolean).join(' '), hostname: info.hostname,
     cpu: info.cpu ? `${info.cpu} (${info.cores} threads)` : undefined, memory_gb: info.memoryGB,
-    gpus: gpus || undefined, shell: info.shell, home: info.home, tools: Object.keys(info.tools || {}),
+    gpus: gpus || undefined, shell: info.shell, home: info.home, inbox: info.inbox, tools: Object.keys(info.tools || {}),
+    takes_tasks: Boolean(info.agents), bots: (info.bots || []).map(bot => bot.display),
   }
 }
 
@@ -165,6 +166,47 @@ export function computerTools (hub, { chat, user, bot } = {}) {
       },
     },
     {
+      name: 'computer_delegate',
+      description: 'Hand a task of many steps to an agent working on one of the computers itself (with that ' +
+        'computer\'s own shell, files and web), for work that is easier done there than command by command from ' +
+        'here: "find every video in Downloads and upscale the short ones", say. It works on its own and answers with ' +
+        'a report; files it makes can be posted in this chat. The owner may be asked to approve it, and what the agent ' +
+        'does needs that computer\'s own approvals. Only computers whose takes_tasks is true can do this. A long task ' +
+        'keeps going as a job: follow it with computer_job. To follow up with the same agent, pass the session its ' +
+        'result gave.',
+      parameters: {
+        type: 'object',
+        properties: {
+          computer: { type: 'string', description: 'The computer\'s name, as computers_list gives it.' },
+          task: { type: 'string', description: 'The task, complete: what to do, with which files (paths there), and what to report.' },
+          why: { type: 'string', description: 'One short sentence for the owner.' },
+          session: { type: 'string', description: 'Optional: the session of an earlier task on that computer, to continue it.' },
+          wait_seconds: { type: 'integer', minimum: 0, maximum: MAX_WAIT, description: `Optional: how long to wait for the report (default ${MAX_WAIT}).` },
+        },
+        required: ['computer', 'task'],
+        additionalProperties: false,
+      },
+      async run (args, signal) {
+        const node = usable(args.computer)
+        if (!node.info?.agents && !nodes.list().find(item => item.id === node.id)?.info?.agents) {
+          throw new Error(`${node.name} can't take on tasks: it needs DSH with the dsh-hub plugin, not just \`dsh-hub node\`.`)
+        }
+        const refused = await permit(node, {
+          title: `Hand a task to ${node.name}?`,
+          summary: args.why || `An agent on ${node.name} does this`,
+          detail: args.task,
+        }, signal)
+        if (refused) return refused
+        const job = await nodes.delegate({
+          node, task: String(args.task), session: args.session, ...by, limit: hub.maxUploadMB * 1024 * 1024,
+          ask: ({ tool, summary, detail }) => hub.ask({ chat, user, bot: `${bot} → ${node.name}`, title: `May the agent on ${node.name} use ${tool}?`, summary, detail }),
+          onFile: file => hub.postFile(chat, `${bot} (via ${node.name})`, file, { node: node.name }),
+        })
+        return follow(job, args.wait_seconds ?? MAX_WAIT, signal,
+          `Still working as job ${job.id}. Check it with computer_job; its result has the report and the session.`)
+      },
+    },
+    {
       name: 'computer_job',
       description: 'How a job started with computer_run is going: its status, exit code and the end of its output. ' +
         'Can wait for it a while first. Without job, lists the jobs of this hub (running ones first).',
@@ -214,6 +256,7 @@ export function activity (name, args = {}) {
   if (name === 'computer_run') return `running a command on ${args.computer ?? 'a computer'}`
   if (name === 'computer_send_file') return `sending a file to ${args.computer ?? 'a computer'}`
   if (name === 'computer_get_file') return `bringing a file from ${args.computer ?? 'a computer'}`
+  if (name === 'computer_delegate') return `handing a task to ${args.computer ?? 'a computer'}`
   if (name === 'computer_job') return args.job ? `checking job ${args.job}` : 'looking at the jobs'
   if (name === 'computer_job_cancel') return `stopping job ${args.job ?? ''}`.trim()
   return `using ${name}`

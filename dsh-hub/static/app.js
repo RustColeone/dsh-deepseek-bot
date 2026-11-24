@@ -144,7 +144,8 @@
       face.append(avatar(bot.display), make("span", "presence"));
       const text = make("div", "member-text");
       text.append(make("div", "member-name", bot.display),
-        make("div", "member-status", busy.has(bot.display) ? "working…" : bot.description || "here"));
+        make("div", "member-status", busy.has(bot.display) ? "working…" : bot.home && !bot.online ? `offline · lives on ${bot.home}` : bot.description || "here"));
+    if (bot.home && !bot.online) member.classList.add("is-offline");
       member.append(face, text);
       member.onclick = () => { if (members.length > 1) mention(bot.display); if (level() === "narrow") setPanel("members", false); };
       const row = make("div", "member-row");
@@ -602,6 +603,11 @@
       state.nodes = event.nodes;
       renderComputers();
       window.hubSettings?.refresh();
+    } else if (event.type === "bots") {
+      state.bots = event.bots;
+      window.hubSettings?.refresh();
+      renderMembers();
+      renderChats();
     } else if (event.type === "progress") {
       state.progress.set(event.run_id, event);
       renderTyping();
@@ -816,6 +822,7 @@
       box.checked = true;
       box.onchange = pickerChanged;
       option.append(box, avatar(bot.display), make("span", "picker-name", bot.display));
+      if (bot.home) option.append(make("span", "picker-home", `on ${bot.home}`));
       list.append(option);
     }
     pickerChanged();

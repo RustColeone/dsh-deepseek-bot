@@ -15,6 +15,8 @@
 //   GET  /files/<id>           a file (pictures, audio, video and PDF shown; anything else downloaded); ranges for video
 //   GET  /api/nodes            owner: the computers       POST /api/nodes/pair { name }: a pairing code
 //   POST /api/nodes/update     owner: { id, name?, policy? }    POST /api/nodes/remove { id }
+//   POST /api/nodes/bots       owner: { node, display, description, prompt }: a bot that lives on that computer
+//   POST /api/nodes/bots/remove owner: { node, name }
 //   POST /api/nodes/enroll     a computer joins: { code, info } (no account; the pairing code is the proof)
 //   GET  /api/nodes/download   ?ticket=: a node fetches the file the hub sent it (its secret and the ticket; ranges)
 //   POST /api/nodes/upload     ?ticket=&name=: a node sends the file the hub asked it for (its secret and the ticket)
@@ -251,6 +253,21 @@ export function createServer ({ hub, accounts, nodes, guard, tls = null, log = (
       const given = await body(request)
       return nodes.remove(String(given.id)) ? send(response, 200, { ok: true }) : send(response, 404, { error: 'No such computer.' })
     }
+    if (method === 'POST' && route === '/api/nodes/bots') {
+      need(request, 'owner')
+      const given = await body(request)
+      const answer = await hub.addNodeBot(String(given.node || ''), {
+        display: String(given.display || '').trim(), description: String(given.description || '').trim(),
+        prompt: String(given.prompt || '').trim(),
+      })
+      return send(response, answer.error ? 400 : 200, answer)
+    }
+    if (method === 'POST' && route === '/api/nodes/bots/remove') {
+      need(request, 'owner')
+      const given = await body(request)
+      const answer = await hub.removeNodeBot(String(given.node || ''), String(given.name || ''))
+      return send(response, answer.error ? 400 : 200, answer)
+    }
     if (method === 'POST' && enrolling) {
       const given = await body(request)
       const answer = nodes.enroll(given, client.address)
@@ -268,12 +285,15 @@ export function createServer ({ hub, accounts, nodes, guard, tls = null, log = (
       const name = safeName(url.searchParams.get('name'))
       const limit = Math.min(ticket.limit || Infinity, hub.maxUploadMB * 1024 * 1024)
       const kept = await upload(request, { name, mime: BY_EXTENSION[path.extname(name).toLowerCase()] || 'application/octet-stream',
-        owner: ticket.owner, origin: `node:${ticket.job.nodeName}`, limit })
-      ticket.job.file = kept.file
+        owner: ticket.owner, origin: `node:${node(request).name}`, limit })
+      if (ticket.onFile) ticket.onFile(kept.file) // a bot posting a file in its chat
+      else ticket.job.file = kept.file
       return send(response, 200, kept)
     }
     throw new HttpError(404, 'Nothing here.')
   }
+
+  const node = request => nodes.authenticate(request.headers.authorization)
 
   /** The ticket a node shows for a file, which must be its own: its secret and a live ticket for that way. */
   function nodeTicket (request, url, way) {

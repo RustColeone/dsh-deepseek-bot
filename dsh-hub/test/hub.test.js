@@ -79,6 +79,30 @@ function socket (url, cookie) {
   }
 }
 
+/** A node's DSH agents, without DSH: one bot, ROG, that asks for approval and posts a file when asked to. */
+function fakeNodeBrain ({ posted, heard }) {
+  const bots = [{ name: 'rog', display: 'ROG', description: 'The gaming PC' }]
+  return {
+    bots: () => bots.map(bot => ({ ...bot })),
+    async create ({ display, description }) {
+      const bot = { name: display.toLowerCase().replace(/\s+/g, '-'), display, description }
+      bots.push(bot)
+      return bot
+    },
+    async remove (name) { bots.splice(bots.findIndex(bot => bot.name === name), 1) },
+    async run ({ mode, bot, session, text, sink, approve, postFile }) {
+      heard.push({ mode, bot, session, text })
+      sink.activity('thinking…')
+      if (text.includes('ask') && await approve({ tool: 'pwsh', summary: 'Check the time', detail: 'Get-Date' }) !== 'approved') {
+        return { text: 'not allowed', session: session || `session-${mode}` }
+      }
+      if (text.includes('post')) await postFile(posted)
+      sink.stream('…')
+      return { text: `${mode === 'reply' ? bot : 'task'} heard: ${text.split('\n')[0]}`, session: session || `session-${mode}` }
+    },
+  }
+}
+
 describe('hub', () => {
   let hub, base, folder, cookie, page, agent
   const post = (route, body, headers = {}) => fetch(base + route, {
@@ -285,6 +309,62 @@ describe('hub', () => {
     const outside = await page.next(event => event.type === 'message' && event.item.kind === 'text', 20000)
     assert.match(outside.item.text, /not in a folder/)
     agent.config.policy = { exec: 'any' }
+  })
+
+  test('a bot living on a computer answers there, asks for approval, and posts files; another can be added', async () => {
+    const posted = path.join(folder, 'from-rog.png')
+    fs.writeFileSync(posted, crypto.randomBytes(1000))
+    const heard = []
+    agent.setBrain(fakeNodeBrain({ posted, heard }))
+    const listed = await page.next(event => event.type === 'bots' && event.bots.some(bot => bot.display === 'ROG'))
+    const rog = listed.bots.find(bot => bot.display === 'ROG')
+    assert.equal(rog.home, 'Test PC')
+    assert.match(rog.name, /^@n[0-9a-f]{12}\/rog$/)
+
+    page.send({ type: 'new', conversation: 'chat-rog', title: 'ROG', bots: [rog.name] })
+    await page.next(event => event.type === 'conversations' && event.items.some(chat => chat.id === 'chat-rog'))
+    page.send({ type: 'send', conversation: 'chat-rog', id: 'r1', text: 'hello, please ask and post' })
+    const card = await page.next(event => event.type === 'message' && event.item.kind === 'approval', 20000)
+    assert.equal(card.item.data.title, 'May ROG use pwsh on Test PC?')
+    assert.equal(card.item.data.detail, 'Get-Date')
+    page.send({ type: 'decide', message: card.item.id, decision: 'approved' })
+    const file = await page.next(event => event.type === 'message' && event.item.kind === 'file', 20000)
+    assert.equal(file.item.speaker, 'ROG')
+    assert.equal(file.item.files[0].mime, 'image/png')
+    const reply = await page.next(event => event.type === 'message' && event.item.kind === 'text', 20000)
+    assert.equal(reply.item.speaker, 'ROG')
+    assert.equal(reply.item.text, 'rog heard: hello, please ask and post')
+    assert.equal(hub.hub.store.chat('chat-rog').state.sessions[rog.name], 'session-reply')
+
+    // An attachment for it is copied to its computer first, and it reads the path there.
+    const uploaded = await (await fetch(`${base}/api/upload?name=notes.txt`, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain', Origin: base, Cookie: cookie }, body: 'some notes',
+    })).json()
+    page.send({ type: 'send', conversation: 'chat-rog', id: 'r2', text: 'read this', files: [uploaded.file.id] })
+    await page.next(event => event.type === 'update' && event.item.data?.kind === 'send' && event.item.data.status === 'done', 20000)
+    await page.next(event => event.type === 'message' && event.item.kind === 'text', 20000)
+    assert.match(heard.at(-1).text, /on this computer at .*node-inbox.*notes\.txt\]/)
+    assert.equal(heard.at(-1).session, 'session-reply') // the same session goes on
+
+    // The owner adds a bot to live there from the page.
+    const node = hub.nodes.list()[0]
+    const added = await (await post('/api/nodes/bots', { node: node.id, display: 'Pi Bot', description: 'small' })).json()
+    assert.equal(added.bot.name, 'pi-bot')
+    await page.next(event => event.type === 'bots' && event.bots.some(bot => bot.display === 'Pi Bot'))
+    assert.equal((await post('/api/nodes/bots', { node: node.id, display: 'rog' })).status, 400) // names are unique
+  })
+
+  test('a hub bot hands a task to an agent on a computer, which reports back', async () => {
+    const chat = hub.hub.store.chats(1).find(item => item.id !== 'chat-rog').id
+    page.send({ type: 'send', conversation: chat, id: 't1', text: 'delegate Test PC: count the files in the inbox' })
+    const done = await page.next(event => event.type === 'update' && event.item.data?.kind === 'agent' &&
+      !['starting', 'running'].includes(event.item.data.status), 20000)
+    assert.equal(done.item.data.status, 'done', done.item.data.error)
+    assert.equal(done.item.data.result.text, 'task heard: count the files in the inbox')
+    assert.equal(done.item.data.result.session, 'session-task')
+    assert.match(done.item.data.output, /· thinking…/)
+    const reply = await page.next(event => event.type === 'message' && event.item.kind === 'text', 20000)
+    assert.match(reply.item.text, /task heard: count the files/)
   })
 
   test('changing the password signs the page out', async () => {

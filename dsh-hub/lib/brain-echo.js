@@ -4,6 +4,7 @@
 //   run <computer>: <command>     runs a command there, asking you first (computer_run)
 //   send to <computer>            with files attached: copies them to that computer's inbox (computer_send_file)
 //   get <computer>: <path>        brings a file from there into the chat (computer_get_file)
+//   delegate <computer>: <task>   hands the task to an agent on that computer (computer_delegate)
 //   job <id>                      how a job is going (computer_job)
 //   anything else                 is said back, a word at a time, so the page's streaming shows
 //
@@ -43,6 +44,9 @@ export function echoBrain () {
       }
       if ((match = /^get\s+([^:]+):\s*(.+)$/i.exec(text))) {
         return use('computer_get_file', { computer: match[1].trim(), path: match[2].trim(), why: 'You asked the echo bot for it.' })
+      }
+      if ((match = /^delegate\s+([^:]+):\s*([\s\S]+)$/i.exec(text))) {
+        return use('computer_delegate', { computer: match[1].trim(), task: match[2].trim(), why: 'You asked the echo bot to hand it over.' })
       }
       if ((match = /^job\s+(j[0-9a-f]+)$/i.exec(text))) return use('computer_job', { job: match[1] })
       const heard = context.length ? `(I also heard ${context.length} other message${context.length > 1 ? 's' : ''}.) ` : ''

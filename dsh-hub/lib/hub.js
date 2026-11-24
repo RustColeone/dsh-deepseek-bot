@@ -11,10 +11,14 @@
 //   forget(chat)              the chat was deleted
 //   close()
 //
+// Bots can also live on the owner's computers (a node running DSH): they are listed with the hub's own, for owners'
+// chats, and their replies are run there (nodes.js: agent). A file attached for one is copied to that computer first.
+//
 // Who answers (Chimera's MomoChat, carried over): the bots @mentioned, in that order; everyone for "everyone" / "you
 // all" / "@all" / 大家; else the bot that spoke last here (or the chat's first). A bot that @mentions another in its
 // answer hands the next turn to it, at most three hand-offs per message. Each chat answers one message at a time.
 import crypto from 'node:crypto'
+import { messageText } from './text.js'
 import { computerTools } from './tools.js'
 
 const EVERYONE = /(^|\s)(@all|@everyone|everyone|you all|all of you|y'all|大家|各位)(\s|[,.!?，。！？]|$)/i
@@ -47,7 +51,14 @@ export class Hub {
   }
 
   // ---- pages ----------------------------------------------------------------------------------------
-  bots () { return this.brain.bots() }
+  /** The bots an account can talk to: the hub's, and for an owner also those living on the computers. */
+  bots (user) {
+    const own = this.brain.bots()
+    if (user && user.role !== 'owner') return own
+    return [...own, ...this.nodes.bots().map(({ name, display, description, nodeName, online }) => ({
+      name, display, description, home: nodeName, online }))]
+  }
+  #ownerOf (chat) { return this.store.userById(chat.owner) }
 
   conversations (user) {
     return this.store.chats(user.id).map(chat => ({ id: chat.id, title: chat.title, bots: chat.bots, pinned: chat.pinned,
@@ -61,7 +72,7 @@ export class Hub {
       conversations = this.conversations(user)
     }
     return {
-      title: this.title, user: { name: user.name, role: user.role }, bots: this.bots(), conversations,
+      title: this.title, user: { name: user.name, role: user.role }, bots: this.bots(user), conversations,
       progress: [...this.runs.values()].filter(run => this.#owns(user, run.chat)).map(run => this.#progress(run)),
       nodes: user.role === 'owner' ? this.nodes.list() : [], default: conversations[0]?.id, maxUploadMB: this.maxUploadMB,
     }
@@ -78,7 +89,32 @@ export class Hub {
   #tell (userId, event) { for (const client of this.clients) if (client.user.id === userId) client.send(event) }
   #tellOwners (event) { for (const client of this.clients) if (client.user.role === 'owner') client.send(event) }
   #chats (user) { this.#tell(user.id, { type: 'conversations', items: this.conversations(user) }) }
-  nodesChanged () { this.#tellOwners({ type: 'nodes', nodes: this.nodes.list() }) }
+  nodesChanged () {
+    this.#tellOwners({ type: 'nodes', nodes: this.nodes.list() })
+    this.#tellOwners({ type: 'bots', bots: this.bots({ role: 'owner' }) })
+  }
+
+  /** A new bot to live on a computer (its DSH runs it). */
+  async addNodeBot (nodeId, { display, description, prompt }) {
+    const node = this.store.node(nodeId)
+    if (!node) return { error: 'No such computer.' }
+    if (!this.nodes.online(node.id)) return { error: `${node.name} is offline.` }
+    if (!/^[\p{L}\p{N}][\p{L}\p{N} _.'-]{0,31}$/u.test(display)) return { error: 'A bot\'s name is 1 to 32 letters, digits, spaces, dots or dashes.' }
+    if (this.bots({ role: 'owner' }).some(bot => bot.display.toLowerCase() === display.toLowerCase())) {
+      return { error: `There is already a bot called ${display}.` }
+    }
+    try {
+      const bot = await this.nodes.call(node.id, 'bot.create', { display, description: description.slice(0, 200), prompt: prompt.slice(0, 4000) })
+      this.log('node_bot_added', { node: node.name, bot: display })
+      return { bot }
+    } catch (error) { return { error: error.message } }
+  }
+
+  async removeNodeBot (nodeId, name) {
+    const node = this.store.node(nodeId)
+    if (!node) return { error: 'No such computer.' }
+    try { await this.nodes.call(node.id, 'bot.remove', { name }); return { ok: true } } catch (error) { return { error: error.message } }
+  }
 
   /** One event from a page. Returns nothing; answers go back as events. */
   async receive (client, event) {
@@ -88,7 +124,7 @@ export class Hub {
       case 'send': return this.#send(client, event)
       case 'new': {
         if (!CHAT_ID.test(chatId) || this.store.chat(chatId)) return
-        const known = new Set(this.bots().map(bot => bot.name))
+        const known = new Set(this.bots(user).map(bot => bot.name))
         const bots = Array.isArray(event.bots) ? event.bots.filter(name => known.has(name)) : null
         this.#create(user, { id: chatId, title: String(event.title || 'New chat').slice(0, 80), bots: bots?.length ? bots : null })
         return this.#chats(user)
@@ -169,7 +205,7 @@ export class Hub {
 
   /** The bots of a chat, as the brain has them. */
   #members (chat) {
-    const all = this.bots()
+    const all = this.bots(this.#ownerOf(chat))
     return chat.bots ? all.filter(bot => chat.bots.includes(bot.name)) : all
   }
 
@@ -253,11 +289,14 @@ export class Hub {
     }
     const tools = user.role === 'owner' ? computerTools(this, { chat, user, bot: bot.display }) : []
     try {
-      const answer = await this.brain.reply({
-        chat, bot: bot.name, message: { text: message.text, sender: message.sender || message.speaker, files: this.#files(message) },
-        context: this.#context(chat, bot, history, message.id), tools, sink, signal: run.controller.signal, user,
-        save: state => this.store.setChatState(chat.id, state),
-      })
+      const said = { text: message.text, sender: message.sender || message.speaker, files: this.#files(message) }
+      const context = this.#context(chat, bot, history, message.id)
+      const answer = bot.name.startsWith('@')
+        ? await this.#nodeReply({ user, chat, bot, message: said, context, sink, signal: run.controller.signal })
+        : await this.brain.reply({
+          chat, bot: bot.name, message: said, context, tools, sink, signal: run.controller.signal, user,
+          save: state => this.store.setChatState(chat.id, state),
+        })
       const { text, data } = typeof answer === 'string' ? { text: answer, data: {} } : (answer ?? {})
       if (!text || !String(text).trim()) return null
       const item = this.store.addMessage({ conversation: chat.id, kind: 'text', speaker: bot.display, text: String(text),
@@ -277,6 +316,45 @@ export class Hub {
       this.#tell(user.id, { type: 'progress_clear', conversation: chat.id, run_id: runId })
       this.#chats(user)
     }
+  }
+
+  /** A bot living on a computer answers there: attachments are copied to it first, and it may post files here. */
+  async #nodeReply ({ user, chat, bot, message, context, sink, signal }) {
+    const home = this.nodes.bots().find(item => item.name === bot.name)
+    if (!home) throw new Error(`${bot.display}'s computer is no longer joined to the hub`)
+    if (user.role !== 'owner') throw new Error(`${bot.display} lives on the owner's computer`)
+    const node = this.store.node(home.node)
+    if (!this.nodes.online(node.id)) throw new Error(`${node.name} is offline, and ${bot.display} lives there`)
+    const files = []
+    for (const file of message.files) {
+      sink.activity(`copying ${file.name} to ${node.name}…`)
+      const job = await this.nodes.send({ node, file, by: user.name, owner: user.id, chat: chat.id, bot: bot.display })
+      this.jobCard(chat, job, bot.display)
+      while (!job.done) await job.wait(3600, signal).then(() => { if (signal.aborted) throw new Error('stopped') })
+      if (job.status !== 'done') throw new Error(`couldn't copy ${file.name} to ${node.name}: ${job.error || job.status}`)
+      files.push({ ...file, local: job.result.path })
+    }
+    const known = chat.state.sessions?.[bot.name]
+    const text = messageText({ message: { ...message, files }, context, solo: this.#members(chat).length <= 1 })
+    const result = await this.nodes.agent({
+      node, mode: 'reply', bot: home.local, session: known, text, sink, signal, owner: user.id,
+      limit: this.maxUploadMB * 1024 * 1024,
+      ask: ({ tool, summary, detail }) => this.ask({ chat, user, bot: bot.display, signal, title: `May ${bot.display} use ${tool} on ${node.name}?`, summary, detail }),
+      onFile: file => this.#post(chat, bot.display, file, { node: node.name }),
+    })
+    if (result.session && result.session !== known) {
+      chat.state = { ...chat.state, sessions: { ...(chat.state.sessions || {}), [bot.name]: result.session } }
+      this.store.setChatState(chat.id, chat.state)
+    }
+    return { text: result.text, data: { node: node.name } }
+  }
+
+  /** A file posted in a chat by a bot. */
+  postFile (chat, speaker, file, data = {}) { return this.#post(chat, speaker, file, data) }
+  #post (chat, speaker, file, data = {}) {
+    const item = this.store.addMessage({ conversation: chat.id, kind: 'file', speaker, text: file.name, files: [file], data })
+    this.#tell(chat.owner, { type: 'message', item })
+    return item
   }
 
   #progress (run) {

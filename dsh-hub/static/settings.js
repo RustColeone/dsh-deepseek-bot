@@ -133,6 +133,7 @@
       const list = make("ul", "node-facts");
       for (const fact of facts) list.append(make("li", "", fact));
       card.append(list);
+      card.append(nodeBots(node, info));
       const policy = make("select");
       for (const [value, label] of [["ask", "Ask me first (commands and files)"], ["always", "Let bots use it without asking"], ["never", "Bots can't use it"]]) {
         const option = make("option", "", label);
@@ -157,6 +158,48 @@
       card.append(actions);
       body.append(card);
     }
+  }
+
+  /** The bots living on one computer, and adding one there (it runs in that computer's DSH, with its own account). */
+  function nodeBots(node, info) {
+    const box = make("div", "node-bots-box");
+    box.append(make("h4", "", "Bots living here"));
+    if (!info.agents) {
+      box.append(make("p", "muted", node.online
+        ? "This computer runs `dsh-hub node` without DSH, so it can run commands and move files but has no bots of its own. Run it as DSH with the dsh-hub plugin (role: node) to give it bots."
+        : "Bots can live on a computer that runs DSH with the dsh-hub plugin. It is offline now."));
+      return box;
+    }
+    const mine = (state().bots || []).filter((bot) => bot.name.startsWith(`@${node.id}/`));
+    const list = make("ul", "node-bots");
+    for (const bot of mine) {
+      const item = make("li");
+      item.append(make("strong", "", bot.display), make("span", "muted", bot.description.replace(/\s*\(lives on .*\)$/, "")),
+        button("Remove", "danger", async () => {
+          if (!confirm(`Remove ${bot.display} from ${node.name}? Its chats stay, but it no longer answers.`)) return;
+          try { await api("api/nodes/bots/remove", { node: node.id, name: bot.name.split("/")[1] }); } catch (error) { toast(error.message); }
+        }));
+      list.append(item);
+    }
+    if (!mine.length) list.append(make("li", "muted", "None yet."));
+    box.append(list);
+    if (!node.online) return box;
+    const form = make("form", "settings-form add-bot");
+    const display = textInput("text", "display", "e.g. ROG", "off");
+    const about = textInput("text", "description", "one line, shown in the chat", "off");
+    const prompt = make("textarea");
+    Object.assign(prompt, { name: "prompt", rows: 3, placeholder: `Its personality, e.g. "You are ROG, a gaming PC who loves video work."` });
+    form.append(field("Name", display), field("About", about), field("Personality", prompt),
+      make("button", "small-button is-primary", `Add a bot on ${node.name}`));
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      try {
+        await api("api/nodes/bots", { node: node.id, display: display.value, description: about.value, prompt: prompt.value });
+        toast(`${display.value} lives on ${node.name} now. Start a chat with it.`);
+      } catch (error) { toast(error.message); }
+    };
+    box.append(form);
+    return box;
   }
 
   // ---- people ----------------------------------------------------------------------------------------

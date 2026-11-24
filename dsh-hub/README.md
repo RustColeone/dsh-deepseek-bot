@@ -17,7 +17,8 @@ node's own policy.
 
 ## Try it without DSH
 
-The echo brain stands in for a model. It says back what you say, and it runs `run <computer>: <command>` on a node.
+The echo brain stands in for a model. It says back what you say, and it runs `run <computer>: <command>` on a node
+(also `delegate <computer>: <task>` on one running DSH).
 
 ```
 npm install
@@ -52,19 +53,49 @@ computer says.
 
 ## With DSH
 
-DSH needs Node 24.22 or newer.
+Each computer uses its own DSH sign-in (your DeepSeek account, or an API key). The hub's bots think on the hub's
+account; a bot living on the ROG thinks on the ROG's.
+
+The DSH desktop app has its command line at
+`%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd` (it brings its own Node). A
+profile is the shipped `web` profile plus this plugin:
+
+```
+dsh hub --from-default-profile web --dump-config          # makes <DSH home>/profiles/hub
+dsh plugin --profile hub add "link:C:/path/to/dsh-hub"     # link: so it follows this folder
+```
 
 1. **Hub (the main computer):**
-   1. Copy [`examples/hub-profile`](examples/hub-profile) to `<DSH home>/profiles/hub/`.
-   2. Fix the `file:` path, then run `npm install` there.
-   3. Run `dsh --profile hub`.
-   4. Open `http://<hub>:4180/setup` with the setup code from its console.
+   1. Make the `hub` profile as above. Its `cordis.patch.yml` can hold the settings from
+      [`examples/hub-profile`](examples/hub-profile) (bots, port, access).
+   2. Run `dsh hub --no-open` (`--port` moves DSH's own web page, which is separate from the hub's, on 4180).
+   3. Open `http://<hub>:4180/setup` with the setup code from its console.
 2. **Each other computer:**
-   1. Get a pairing code on the page.
-   2. Put it in [`examples/node-profile`](examples/node-profile)'s `cordis.patch.yml`.
-   3. Run `dsh --profile node`. After the first run the code isn't needed.
+   1. Make a `node` profile the same way.
+   2. Get a pairing code on the page and put it in that profile's `cordis.patch.yml`, as in
+      [`examples/node-profile`](examples/node-profile).
+   3. Run `dsh node --no-open`. After the first run the code isn't needed.
 
 Every option is documented at the top of [`plugin/index.js`](plugin/index.js).
+
+## Bots that live on your computers
+
+A computer running DSH as a node has agents of its own, which think with that computer's sign-in and work with its
+own shell, files and web:
+
+- **Its bots.** Add one from the page (⚙️ Settings → Computers → the computer → Add a bot here), or list them in its
+  profile's config (`bots:`). It then shows up as a chat member like the hub's bots: chat with it alone, or bring it
+  into a group chat with @mentions. A file attached for it is copied to its computer first, and it can post files
+  from there into the chat (`chat_send_file`). Its DSH sessions are kept on its computer; the chat itself is kept on
+  the hub.
+- **Tasks.** A hub bot can hand a computer a task of many steps (`computer_delegate`). An agent there does it and
+  reports back, with a job card in the chat showing what it is doing. Passing the `session` from the result
+  continues with the same agent.
+
+What those agents do is governed by their computer's DSH permissions (`permission`, `workspace-write` by default,
+working in the inbox folder). When DSH asks for an approval, the card shows up in the hub's chat. The computer's own
+policy decides whether the hub may add bots there (`policy.bots`) or hand it tasks (`policy.tasks`).
+`dsh-hub node` without DSH has no agents: it only runs commands and moves files.
 
 ## Security
 
@@ -101,7 +132,10 @@ If you're locked out, run `node bin/dsh-hub.js password <name>` on the hub's com
 | [`lib/nodes.js`](lib/nodes.js) | The hub's side of the nodes: pairing, enrolment, connections, jobs |
 | [`lib/node-agent.js`](lib/node-agent.js) | A node: connects out, describes itself (GPUs, tools), runs commands within its own policy |
 | [`lib/store.js`](lib/store.js) | One SQLite file (`hub.db`) |
-| [`plugin/`](plugin) | The DSH plugin: the hub or node role, and DSH agents as the brain |
+| [`plugin/index.js`](plugin/index.js) | The DSH plugin: the hub or node role |
+| [`plugin/runner.js`](plugin/runner.js) | Running a DSH agent: a session made or resumed, a turn streamed, its approvals routed |
+| [`plugin/brain.js`](plugin/brain.js) | The hub's bots as DSH agents |
+| [`plugin/node-brain.js`](plugin/node-brain.js) | A node's own bots and its task agent as DSH agents |
 | [`static/`](static) | The page, ported from ChimeraArchive's web UI |
 
 `npm test` runs the hub end to end with a real node on this computer, and the DSH brain against a stand-in for DSH.
@@ -110,5 +144,4 @@ If you're locked out, run `node bin/dsh-hub.js password <name>` on the hub's com
 
 - **Notifications** on the phone when a card needs you.
 - **Resuming an upload from a computer.** A download to a computer resumes; an upload from one starts over.
-- **Checked against a running DSH.** The plugin follows DSH's source and passes tests against a stand-in, but hasn't
-  run inside DSH yet.
+- **A task outlasting a dropped connection.** If a node loses the hub, its running bot replies and tasks stop.
