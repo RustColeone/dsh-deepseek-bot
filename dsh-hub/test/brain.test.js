@@ -49,7 +49,21 @@ function fakeDsh () {
   }
   const build = async (sessionId, agentOptions, setup) => {
     const tools = new Map()
-    const agentCtx = { tools: { register: def => { tools.set(def.name, def); return () => {} } } }
+    // As strict as DSH: an output schema of a type it knows, and results that are lossless JSON
+    const strict = def => {
+      if (!['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'].includes(def.output?.schema?.type)) {
+        throw new Error(`unsupported JSON schema for ${def.name}`)
+      }
+      const execute = def.execute
+      return { ...def, async execute (...args) {
+        const value = await execute(...args)
+        if (JSON.stringify(value) !== JSON.stringify(JSON.parse(JSON.stringify(value))) || /undefined/.test(JSON.stringify(value, (key, item) => item === undefined ? 'undefined' : item))) {
+          throw new Error(`${def.name}: value is not lossless JSON`)
+        }
+        return value
+      } }
+    }
+    const agentCtx = { tools: { register: def => { tools.set(def.name, strict(def)); return () => {} } } }
     await setup(agentCtx)
     sessions.add(sessionId)
     return { agent: makeAgent(sessionId, agentOptions, tools), dispose: async () => {} }

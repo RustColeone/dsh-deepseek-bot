@@ -14,6 +14,7 @@
 //       tls: { cert: <file>, key: <file> }
 //       title: Hub
 //       maxUploadMB: 2048
+//       folder: <DSH home>/dsh-hub  # where the hub keeps its accounts, chats and files
 //       bots:                    # who talks; default: one, DeepSeek
 //         - { name: deepseek, display: DeepSeek, description: ..., prompt: ... }
 //       model: { provider: ..., model: ... }   # default: DSH's default model
@@ -74,7 +75,7 @@ function hub (ctx, config) {
   let running = null
   let closed = false
   const started = (async () => {
-    const folder = await home()
+    const folder = config.folder ? path.resolve(config.folder) : await home()
     const brain = await dshBrain(ctx, {
       bots: config.bots, title: config.title ?? 'Hub', model: config.model, permission: config.permission ?? 'workspace-write',
       workspace: config.workspace ?? path.join(folder, 'workspace'), log,
@@ -100,7 +101,7 @@ function node (ctx, config) {
   let agent = null
   let closed = false
   const started = (async () => {
-    const folder = await home()
+    const folder = config.folder ? path.resolve(config.folder) : await home()
     const file = path.join(folder, 'node.json')
     let kept = readConfig(file)
     if (!kept?.secret || (config.hub && kept.hub && new URL(config.hub).origin !== new URL(kept.hub).origin)) {

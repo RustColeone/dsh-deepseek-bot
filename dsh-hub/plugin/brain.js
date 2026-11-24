@@ -51,14 +51,15 @@ function toDshTool (tool, current) {
     description: tool.description,
     parameters,
     output: {
-      schema: { type: 'json' },
+      schema: { type: 'object' }, // every hub tool answers with an object; its fields vary
       render: (args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
     },
     async execute (args, exec) {
       const turn = current.get(exec.agent?.id)
       const own = turn?.tools.find(item => item.name === tool.name)
       if (!own) throw new Error('This tool is only available in the owner\'s chats on the hub.')
-      return await own.run(args ?? {}, exec.signal)
+      // DSH keeps tool results as strict JSON: no undefined fields, no class instances
+      return JSON.parse(JSON.stringify(await own.run(args ?? {}, exec.signal) ?? {}))
     },
   }
 }
