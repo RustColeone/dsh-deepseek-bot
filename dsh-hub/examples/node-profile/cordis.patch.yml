@@ -1,18 +1,18 @@
 # Any other computer (the ROG, say): a node of the hub. Get a pairing code on the hub's page (Computers, Add), put it
-# here, run `dsh --profile node` once; after that the code is no longer needed (the node keeps its own secret).
+# here, run `dsh node --no-open` once; after that the code is no longer needed (the node keeps its own secret).
 - id: dsh-hub
   config:
     role: node
     hub: http://192.168.1.10:4180
     code: ABCD-EFGH
-    policy:
+    policy:              # this computer's own last word; the hub can't change it
       exec: any          # any, allowlist (with allow: ["^video2x ", "^nvidia-smi"]) or never
       files: any         # files the hub may take: any, folders (with folders: ["~/Videos"]) or never
       # inbox: ~/Videos/from-hub   # where files sent from the hub land
-    tools: [video2x, ffmpeg]   # also report where these are
       bots: any          # the hub's owner may add bots to live here (own: only those below)
       tasks: any         # hub bots may hand this computer tasks (never: they can't)
-    bots:                # bots that live here (DSH only), besides those added from the hub's page
+    tools: [video2x, ffmpeg]   # also report where these are
+    bots:               # bots that live here (DSH only), besides those added from the hub's page
       - display: ROG
         description: The gaming PC with the big GPU
         prompt: You are ROG, a gaming PC who loves video work. You keep answers short and a little cheeky.
