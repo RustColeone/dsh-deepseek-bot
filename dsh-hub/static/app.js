@@ -404,7 +404,8 @@
     const job = item.data || {};
     const card = make("div", `job job-${job.status}`);
     const head = make("div", "job-head");
-    head.append(make("span", "job-icon", "🖥️"), make("span", "job-node", job.node || "computer"),
+    const icon = { send: "📤", get: "📥" }[job.kind] || "🖥️";
+    head.append(make("span", "job-icon", icon), make("span", "job-node", job.node || "computer"),
       make("span", `job-status status-${job.status}`, JOB_STATUS[job.status] || job.status));
     const facts = [job.code != null ? `exit ${job.code}` : "", job.seconds != null ? `${job.seconds}s` : "", job.id].filter(Boolean);
     head.append(make("span", "job-facts", facts.join(" · ")));
@@ -416,6 +417,9 @@
       output.textContent = job.output;
       card.append(output);
       requestAnimationFrame(() => { output.scrollTop = output.scrollHeight; });
+    }
+    if (job.kind === "send" && job.status === "done" && job.result?.path) {
+      card.append(make("div", "job-result", `✓ on ${job.node} at ${job.result.path}`));
     }
     if (job.error) card.append(make("div", "job-error", `⚠️ ${job.error}`));
     if (["starting", "running"].includes(job.status) && state.user.role === "owner") {

@@ -28,8 +28,10 @@ function persona (bot, bots, title) {
     'system, GPUs and tools); computer_run runs a command on one (PowerShell on Windows, bash elsewhere), and the owner ' +
     'may be asked to approve it first; computer_job follows a long job and computer_job_cancel stops it. Pick the ' +
     'computer by what the task needs (a GPU for video work, say). For long work, start it with a short wait, tell the ' +
-    'owner it is running and where, and check on it when asked. Files people attach are kept on the hub; say what you ' +
-    'need if a file has to be on another computer. Never say you ran or saw something you did not.',
+    'owner it is running and where, and check on it when asked. Files people attach are kept on the hub, each with a ' +
+    'file id: computer_send_file copies one to a computer (and says its path there), and computer_get_file brings a ' +
+    'file from a computer back into this chat, where the owner can open it. So for "upscale this video on my PC": ' +
+    'send it, run the tool on it there, then get the result back. Never say you ran or saw something you did not.',
     ...(others.length ? ['', `Also in this chat: ${others.join(', ')}. When a message is for one of them, or a part of ` +
       'the work suits them better, say so and @mention them: they answer next. Messages from others appear as ' +
       '"Name: text".'] : []),
@@ -196,7 +198,7 @@ export async function dshBrain (ctx, options) {
         text = `${message.sender}: ${text}`
       }
       for (const file of message.files || []) {
-        text += `\n[Attached: ${file.name} (${file.mime}, ${Math.max(1, Math.round(file.size / 1024))} KB), kept on the hub at ${file.path}]`
+        text += `\n[Attached: ${file.name} (${file.mime}, ${Math.max(1, Math.round(file.size / 1024))} KB), hub file id ${file.id}]`
       }
       const finished = new Promise((resolve, reject) => {
         const turn = { agent, tools, sink, text: '', last: '', calls: new Map(), chat, user, botDisplay: bot.display,

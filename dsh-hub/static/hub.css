@@ -58,6 +58,7 @@
 .job-output { margin: 0; background: #1d1916; color: #eadfd3; border-radius: 10px; padding: 8px 10px; font-size: .78rem;
               white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; }
 .job-error { color: #b4512d; font-size: .85rem; margin-top: 6px; }
+.job-result { color: var(--ok, #2f7d4f); font-size: .85rem; margin-top: 6px; word-break: break-all; }
 .job-stop { margin-top: 8px; padding: 4px 12px; font-size: .82rem; }
 
 /* settings */

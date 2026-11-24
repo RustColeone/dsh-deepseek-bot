@@ -1,11 +1,12 @@
 // The tools the hub gives a bot in its owner's chats: look at the computers joined to the hub, run a command on one,
-// and follow or stop what runs. They are plain objects (name, description, JSON-Schema parameters, run), so any brain
+// move files between the hub and a computer, and follow or stop what runs. They are plain objects (name, description, JSON-Schema parameters, run), so any brain
 // can offer them to its model: the DSH plugin turns them into DSH tools (plugin/brain.js), the echo brain calls them
 // itself.
 //
-// Running a command asks first, by the computer's policy on the hub (ask, always, never: Settings on the page), and
-// then the computer's own policy has the last word (node-agent.js). Only owners' chats get these tools: the computers
-// are the owner's.
+// Running a command or moving a file asks first, by the computer's policy on the hub (ask, always, never: Settings on
+// the page), and then the computer's own policy has the last word (node-agent.js). Only owners' chats get these
+// tools: the computers are the owner's.
+import { megabytes } from './nodes.js'
 
 const WAIT = 20 // seconds computer_run waits for a command to finish before leaving it running as a job
 const MAX_WAIT = 120
@@ -34,6 +35,29 @@ export function computerTools (hub, { chat, user, bot } = {}) {
     return node
   }
   const result = (job, characters = 6000) => job.view(characters)
+  const usable = name => {
+    const node = pick(name)
+    if (!nodes.online(node.id)) throw new Error(`${node.name} is offline. It has to be on, with DSH (or dsh-hub node) running.`)
+    if (node.policy === 'never') throw new Error(`The owner has switched off bots using ${node.name}.`)
+    return node
+  }
+  /** Ask the owner unless the computer's policy is always. Returns null when allowed, else why not (for the model). */
+  const permit = async (node, card, signal) => {
+    if (node.policy === 'always') return null
+    const decision = await hub.ask({ chat, user, bot, signal, node, always: `Always allow on ${node.name}`, ...card })
+    if (decision === 'always') nodes.update(node.id, { policy: 'always' })
+    if (decision === 'approved' || decision === 'always') return null
+    return { ran: false, reason: decision === 'denied' ? 'The owner denied it. Do not try again unless they ask.' :
+      decision === 'expired' ? 'Nobody answered in time.' : 'It was cancelled.' }
+  }
+  const follow = async (job, seconds, signal, note) => {
+    hub.jobCard(chat, job, bot)
+    await job.wait(Math.min(MAX_WAIT, seconds), signal)
+    const answer = result(job)
+    if (!job.done) answer.note = note
+    return answer
+  }
+  const by = { by: user?.name, owner: user?.id, chat: chat?.id, bot }
 
   return [
     {
@@ -65,30 +89,79 @@ export function computerTools (hub, { chat, user, bot } = {}) {
         additionalProperties: false,
       },
       async run (args, signal) {
-        const node = pick(args.computer)
-        if (!nodes.online(node.id)) throw new Error(`${node.name} is offline. It has to be on, with DSH (or dsh-hub node) running.`)
-        if (node.policy === 'never') throw new Error(`The owner has switched off running commands on ${node.name}.`)
-        if (node.policy !== 'always') {
-          const decision = await hub.ask({
-            chat, user, bot, signal, node,
-            title: `Run on ${node.name}?`,
-            summary: args.why || `Run a command on ${node.name}`,
-            detail: args.command,
-            meta: [args.shell && `shell: ${args.shell}`, args.cwd && `in: ${args.cwd}`].filter(Boolean).join(' · '),
-            always: `Always allow on ${node.name}`,
-          })
-          if (decision === 'always') nodes.update(node.id, { policy: 'always' })
-          else if (decision !== 'approved') {
-            return { ran: false, reason: decision === 'denied' ? 'The owner denied it. Do not try again unless they ask.' :
-              decision === 'expired' ? 'Nobody answered in time.' : 'It was cancelled.' }
-          }
-        }
-        const job = await nodes.run({ node, command: args.command, cwd: args.cwd, shell: args.shell, by: user.name, chat: chat.id })
-        hub.jobCard(chat, job, bot)
-        await job.wait(Math.min(MAX_WAIT, args.wait_seconds ?? WAIT), signal)
-        const answer = result(job)
-        if (!job.done) answer.note = `Still running as job ${job.id}. Check it with computer_job, or tell the owner it runs on.`
-        return answer
+        const node = usable(args.computer)
+        const refused = await permit(node, {
+          title: `Run on ${node.name}?`,
+          summary: args.why || `Run a command on ${node.name}`,
+          detail: args.command,
+          meta: [args.shell && `shell: ${args.shell}`, args.cwd && `in: ${args.cwd}`].filter(Boolean).join(' · '),
+        }, signal)
+        if (refused) return refused
+        const job = await nodes.run({ node, command: args.command, cwd: args.cwd, shell: args.shell, ...by })
+        return follow(job, args.wait_seconds ?? WAIT, signal,
+          `Still running as job ${job.id}. Check it with computer_job, or tell the owner it runs on.`)
+      },
+    },
+    {
+      name: 'computer_send_file',
+      description: 'Copy a file kept on the hub (one attached in this chat, or one brought back with computer_get_file) ' +
+        'to one of the computers, into its inbox folder. The result\'s result.path is where it is on that computer: use ' +
+        'that path in computer_run. A big file keeps copying as a job (follow it with computer_job). The owner may be ' +
+        'asked to approve it first.',
+      parameters: {
+        type: 'object',
+        properties: {
+          computer: { type: 'string', description: 'The computer\'s name, as computers_list gives it.' },
+          file: { type: 'string', description: 'The hub file id (f…), as given with the attachment.' },
+          why: { type: 'string', description: 'One short sentence for the owner: what the file is for there.' },
+          wait_seconds: { type: 'integer', minimum: 0, maximum: MAX_WAIT, description: 'Optional: how long to wait for the copy (default 60).' },
+        },
+        required: ['computer', 'file'],
+        additionalProperties: false,
+      },
+      async run (args, signal) {
+        const node = usable(args.computer)
+        const file = hub.store.file(String(args.file || ''))
+        if (!file || file.owner !== user.id) throw new Error(`No file ${args.file} on the hub (use the id given with the attachment).`)
+        const refused = await permit(node, {
+          title: `Send a file to ${node.name}?`,
+          summary: args.why || `Copy ${file.name} to ${node.name}`,
+          detail: `${file.name} (${megabytes(file.size)}) → ${node.name}'s inbox`,
+        }, signal)
+        if (refused) return refused
+        const job = await nodes.send({ node, file, ...by })
+        return follow(job, args.wait_seconds ?? 60, signal,
+          `Still copying as job ${job.id}. Wait for it with computer_job before using the file there.`)
+      },
+    },
+    {
+      name: 'computer_get_file',
+      description: 'Bring a file from one of the computers to the hub and post it in this chat, so the owner can open ' +
+        'it here (a video plays in the chat). The result gives its hub file id, for computer_send_file to another ' +
+        'computer. A folder has to be zipped first. A big file keeps coming as a job; it is posted when it arrives. ' +
+        'The owner may be asked to approve it first.',
+      parameters: {
+        type: 'object',
+        properties: {
+          computer: { type: 'string', description: 'The computer\'s name, as computers_list gives it.' },
+          path: { type: 'string', description: 'The file\'s path on that computer (absolute, or from its home folder).' },
+          why: { type: 'string', description: 'One short sentence for the owner: what the file is.' },
+          wait_seconds: { type: 'integer', minimum: 0, maximum: MAX_WAIT, description: 'Optional: how long to wait for it (default 60).' },
+        },
+        required: ['computer', 'path'],
+        additionalProperties: false,
+      },
+      async run (args, signal) {
+        const node = usable(args.computer)
+        const refused = await permit(node, {
+          title: `Bring a file from ${node.name}?`,
+          summary: args.why || `Copy a file from ${node.name} to this chat`,
+          detail: `${node.name}: ${args.path}`,
+        }, signal)
+        if (refused) return refused
+        const job = await nodes.fetch({ node, path: String(args.path), limit: hub.maxUploadMB * 1024 * 1024, ...by })
+        return follow(job, args.wait_seconds ?? 60, signal,
+          `Still coming as job ${job.id}; it is posted in the chat when it arrives.`)
       },
     },
     {
@@ -139,6 +212,8 @@ export function computerTools (hub, { chat, user, bot } = {}) {
 export function activity (name, args = {}) {
   if (name === 'computers_list') return 'looking at the computers'
   if (name === 'computer_run') return `running a command on ${args.computer ?? 'a computer'}`
+  if (name === 'computer_send_file') return `sending a file to ${args.computer ?? 'a computer'}`
+  if (name === 'computer_get_file') return `bringing a file from ${args.computer ?? 'a computer'}`
   if (name === 'computer_job') return args.job ? `checking job ${args.job}` : 'looking at the jobs'
   if (name === 'computer_job_cancel') return `stopping job ${args.job ?? ''}`.trim()
   return `using ${name}`

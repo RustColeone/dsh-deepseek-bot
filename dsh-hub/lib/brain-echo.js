@@ -2,6 +2,8 @@
 //
 //   computers                     lists the computers (computers_list)
 //   run <computer>: <command>     runs a command there, asking you first (computer_run)
+//   send to <computer>            with files attached: copies them to that computer's inbox (computer_send_file)
+//   get <computer>: <path>        brings a file from there into the chat (computer_get_file)
 //   job <id>                      how a job is going (computer_job)
 //   anything else                 is said back, a word at a time, so the page's streaming shows
 //
@@ -30,6 +32,17 @@ export function echoBrain () {
       if (/^computers?$/i.test(text)) return use('computers_list', {})
       if ((match = /^run\s+([^:]+):\s*([\s\S]+)$/i.exec(text))) {
         return use('computer_run', { computer: match[1].trim(), command: match[2].trim(), why: 'You asked the echo bot to run it.' })
+      }
+      if ((match = /^send\s+(?:it\s+|this\s+)?to\s+(.+)$/i.exec(text))) {
+        if (!message.files?.length) return 'Attach the file to send with that message.'
+        const said = []
+        for (const file of message.files) {
+          said.push(await use('computer_send_file', { computer: match[1].trim(), file: file.id, why: 'You asked the echo bot to send it.' }))
+        }
+        return said.join('\n\n')
+      }
+      if ((match = /^get\s+([^:]+):\s*(.+)$/i.exec(text))) {
+        return use('computer_get_file', { computer: match[1].trim(), path: match[2].trim(), why: 'You asked the echo bot for it.' })
       }
       if ((match = /^job\s+(j[0-9a-f]+)$/i.exec(text))) return use('computer_job', { job: match[1] })
       const heard = context.length ? `(I also heard ${context.length} other message${context.length > 1 ? 's' : ''}.) ` : ''

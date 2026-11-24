@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS chats (
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL,                -- user, text, notice, approval
+  kind TEXT NOT NULL,                -- user, text, notice, approval, job, file
   speaker TEXT NOT NULL DEFAULT '',  -- the bot that said it
   sender TEXT NOT NULL DEFAULT '',   -- the account that said it
   text TEXT NOT NULL DEFAULT '',

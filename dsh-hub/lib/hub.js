@@ -338,6 +338,7 @@ export class Hub {
 
   /** A job's output or state changed: its card follows, at most once a second while it runs. */
   jobChanged (job) {
+    if (job.done && job.kind === 'get' && job.status === 'done' && job.file && !job.posted) this.#posted(job)
     const card = this.jobCards.get(job.id)
     if (!card) return
     const write = () => {
@@ -347,6 +348,16 @@ export class Hub {
       if (job.done) this.jobCards.delete(job.id)
     }
     if (job.done) { clearTimeout(card.timer); write() } else if (!card.timer) card.timer = setTimeout(write, 1000)
+  }
+
+  /** A file brought from a computer arrives in the chat that asked for it, from the bot that asked. */
+  #posted (job) {
+    job.posted = true
+    const chat = this.store.chat(job.chat)
+    if (!chat) return
+    const item = this.store.addMessage({ conversation: chat.id, kind: 'file', speaker: job.bot, text: `From ${job.nodeName}: ${job.file.name}`,
+      files: [job.file], data: { job: job.id, node: job.nodeName, path: job.result?.path } })
+    this.#tell(chat.owner, { type: 'message', item })
   }
 
   close () {

@@ -31,7 +31,24 @@ node bin/dsh-hub.js join http://<hub>:4180 ABCD-EFGH
 node bin/dsh-hub.js node
 ```
 
-In a chat, type `computers`, or `run <name>: nvidia-smi`. Approve the card and watch the job card.
+In a chat, type `computers`, or `run <name>: nvidia-smi`. Approve the card and watch the job card. Attach a file and
+type `send to <name>` to copy it into that computer's inbox; `get <name>: <path>` brings a file from it into the chat.
+
+## Files between your computers
+
+The phone's upload lands on the hub. From there a bot copies it to the computer that will do the work, runs the work
+there, and brings the result back into the chat:
+
+```
+phone ──upload──► hub ──computer_send_file──► ROG's inbox ──computer_run (video2x)──► out.mp4 ──computer_get_file──► chat
+```
+
+Each copy is a job with a live card (progress, Stop). The hub never sends a file down the node's websocket. It makes a
+ticket for that one computer, that one file and that one direction, valid for an hour. The computer then downloads or
+uploads over plain HTTP with its own secret and the ticket. A download picks up where it stopped if the connection
+breaks, and both sides check the SHA-256. Files sent to a computer land in its inbox (`~/.dsh-hub/inbox`, or
+`policy.inbox`), and a name already there gets " (2)". A file brought back is typed by its name, never by what the
+computer says.
 
 ## With DSH
 
@@ -62,6 +79,7 @@ the home network.
 | Requests | Only home-network and Tailscale addresses (`access: lan`, the default). The Host header must be a home name, which stops DNS rebinding. The Origin must be the page's own. The API takes JSON only. A strict CSP is set. |
 | Nodes | Join once with a single-use pairing code that expires in 10 minutes. After that they authenticate with a 32-byte secret, of which the hub stores only the hash. Nodes connect out, so they open no port. |
 | Commands | Each computer's policy on the hub is **ask** (the default: an approval card shows the exact command), **always** or **never**. The node's own `policy` (`any` / `allowlist` / `never`) is in its own config and the hub can't change it, so a compromised hub still only gets what the node allows. Only owners use and approve computers. |
+| Files | Moving a file follows the same hub policy (ask, always, never). The node's own `policy.files` decides what the hub may take: `any` (the default when `exec` is `any`), `folders` (only `policy.folders` and the inbox, the default otherwise) or `never` (no files either way). Tickets are single-use per transfer, tied to one node, and expire. |
 
 For use away from home, put the hub on Tailscale or WireGuard and keep `access: lan`. Tailscale's addresses count as
 local. If you open it to the internet anyway (`access: anywhere`), give it https: either `tls` with a certificate, or
@@ -79,7 +97,7 @@ If you're locked out, run `node bin/dsh-hub.js password <name>` on the hub's com
 | [`lib/guard.js`](lib/guard.js) | Address, Host and Origin checks; security headers |
 | [`lib/server.js`](lib/server.js) | HTTP(S) routes, uploads and files (with ranges for video), the `/ws` and `/node` websockets |
 | [`lib/hub.js`](lib/hub.js) | Chats, who answers (`@mentions`, everyone, hand-offs), streaming, approval and job cards |
-| [`lib/tools.js`](lib/tools.js) | The computer tools any brain gets: `computers_list`, `computer_run`, `computer_job`, `computer_job_cancel` |
+| [`lib/tools.js`](lib/tools.js) | The computer tools any brain gets: `computers_list`, `computer_run`, `computer_send_file`, `computer_get_file`, `computer_job`, `computer_job_cancel` |
 | [`lib/nodes.js`](lib/nodes.js) | The hub's side of the nodes: pairing, enrolment, connections, jobs |
 | [`lib/node-agent.js`](lib/node-agent.js) | A node: connects out, describes itself (GPUs, tools), runs commands within its own policy |
 | [`lib/store.js`](lib/store.js) | One SQLite file (`hub.db`) |
@@ -90,8 +108,7 @@ If you're locked out, run `node bin/dsh-hub.js password <name>` on the hub's com
 
 ## Not yet
 
-- **Files between computers.** For example, send the phone's video to the ROG and bring the result back as a chat
-  attachment. This is the next step for the Video2X case.
 - **Notifications** on the phone when a card needs you.
+- **Resuming an upload from a computer.** A download to a computer resumes; an upload from one starts over.
 - **Checked against a running DSH.** The plugin follows DSH's source and passes tests against a stand-in, but hasn't
   run inside DSH yet.

@@ -16,6 +16,8 @@
 //   GET  /api/nodes            owner: the computers       POST /api/nodes/pair { name }: a pairing code
 //   POST /api/nodes/update     owner: { id, name?, policy? }    POST /api/nodes/remove { id }
 //   POST /api/nodes/enroll     a computer joins: { code, info } (no account; the pairing code is the proof)
+//   GET  /api/nodes/download   ?ticket=: a node fetches the file the hub sent it (its secret and the ticket; ranges)
+//   POST /api/nodes/upload     ?ticket=&name=: a node sends the file the hub asked it for (its secret and the ticket)
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -35,6 +37,13 @@ const INLINE = /^(image\/(png|jpeg|gif|webp|avif)|audio\/[\w.+-]+|video\/[\w.+-]
 const MIME = /^[a-z]+\/[a-z0-9.+-]{1,80}$/
 const JSON_LIMIT = 64 * 1024
 const FILE_ID = /^f[0-9a-f]{20}$/
+// A node's file is typed by its name here, never by what the node says.
+const BY_EXTENSION = { '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm',
+  '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4',
+  '.wav': 'audio/wav', '.flac': 'audio/flac', '.ogg': 'audio/ogg', '.opus': 'audio/ogg', '.pdf': 'application/pdf',
+  '.txt': 'text/plain', '.log': 'text/plain', '.md': 'text/markdown', '.csv': 'text/csv', '.json': 'application/json',
+  '.zip': 'application/zip', '.7z': 'application/x-7z-compressed' }
 
 function cookies (request) {
   const found = {}
@@ -120,7 +129,8 @@ export function createServer ({ hub, accounts, nodes, guard, tls = null, log = (
     const route = url.pathname
     const method = request.method
     const enrolling = route === '/api/nodes/enroll'
-    const why = guard.check(request, client, { browser: !enrolling })
+    const machine = enrolling || route === '/api/nodes/download' || route === '/api/nodes/upload'
+    const why = guard.check(request, client, { browser: !machine })
     if (why) return send(response, 403, { error: `Refused (${why}).` })
 
     // ---- pages and their files
@@ -209,7 +219,7 @@ export function createServer ({ hub, accounts, nodes, guard, tls = null, log = (
       if (!Number.isSafeInteger(after) || after < 0) return send(response, 400, { error: 'Bad id.' })
       return send(response, 200, { messages: hub.store.history(conversation, after) })
     }
-    if (method === 'POST' && route === '/api/upload') return upload(request, response, url, need(request))
+    if (method === 'POST' && route === '/api/upload') return pageUpload(request, response, url, need(request))
     if (method === 'GET' && route.startsWith('/files/')) {
       const user = need(request)
       const id = route.slice('/files/'.length)
@@ -246,7 +256,35 @@ export function createServer ({ hub, accounts, nodes, guard, tls = null, log = (
       const answer = nodes.enroll(given, client.address)
       return send(response, answer.status ?? 200, answer)
     }
+    if (method === 'GET' && route === '/api/nodes/download') {
+      const ticket = nodeTicket(request, url, 'down')
+      const found = hub.store.file(ticket.file)
+      if (!found) throw new HttpError(404, 'That file is gone from the hub.')
+      return stored(request, response, found, { download: true })
+    }
+    if (method === 'POST' && route === '/api/nodes/upload') {
+      const ticket = nodeTicket(request, url, 'up')
+      nodes.claim(url.searchParams.get('ticket'))
+      const name = safeName(url.searchParams.get('name'))
+      const limit = Math.min(ticket.limit || Infinity, hub.maxUploadMB * 1024 * 1024)
+      const kept = await upload(request, { name, mime: BY_EXTENSION[path.extname(name).toLowerCase()] || 'application/octet-stream',
+        owner: ticket.owner, origin: `node:${ticket.job.nodeName}`, limit })
+      ticket.job.file = kept.file
+      return send(response, 200, kept)
+    }
     throw new HttpError(404, 'Nothing here.')
+  }
+
+  /** The ticket a node shows for a file, which must be its own: its secret and a live ticket for that way. */
+  function nodeTicket (request, url, way) {
+    const node = nodes.authenticate(request.headers.authorization)
+    if (!node) throw new HttpError(401, 'This computer is not joined to the hub.')
+    const ticket = nodes.ticket(node, url.searchParams.get('ticket'), way)
+    if (!ticket) {
+      log('ticket_refused', { node: node.name, way })
+      throw new HttpError(403, 'That ticket is wrong, spent or expired.')
+    }
+    return ticket
   }
 
   function file (response, where, cache = 'no-cache') {
@@ -257,20 +295,27 @@ export function createServer ({ hub, accounts, nodes, guard, tls = null, log = (
     response.end(data)
   }
 
-  async function upload (request, response, url, user) {
-    const limit = hub.maxUploadMB * 1024 * 1024
-    const declared = Number(request.headers['content-length'] || 0)
-    if (declared > limit) throw new HttpError(413, `Files are at most ${hub.maxUploadMB} MB.`)
-    const id = `f${crypto.randomBytes(10).toString('hex')}`
-    const name = safeName(url.searchParams.get('name'))
+  /** A page's upload: the file itself is the body, typed by its Content-Type. */
+  async function pageUpload (request, response, url, user) {
     const type = String(request.headers['content-type'] || '').split(';')[0].trim().toLowerCase()
-    const mime = MIME.test(type) ? type : 'application/octet-stream'
+    const kept = await upload(request, { name: safeName(url.searchParams.get('name')), mime: MIME.test(type) ? type : 'application/octet-stream',
+      owner: user.id, origin: 'upload', limit: hub.maxUploadMB * 1024 * 1024 })
+    return send(response, 200, { file: kept.file })
+  }
+
+  /** Stream a request's body to a new file on the hub's disk, within `limit` bytes. Answers { file, sha256 }. */
+  async function upload (request, { name, mime, owner, origin, limit }) {
+    const most = `Files are at most ${Math.round(limit / 1024 / 1024)} MB.`
+    if (Number(request.headers['content-length'] || 0) > limit) throw new HttpError(413, most)
+    const id = `f${crypto.randomBytes(10).toString('hex')}`
     const where = hub.store.filePath(id)
+    const hash = crypto.createHash('sha256')
     let size = 0
     const counter = async function * (source) {
       for await (const chunk of source) {
         size += chunk.length
-        if (size > limit) throw new HttpError(413, `Files are at most ${hub.maxUploadMB} MB.`)
+        if (size > limit) throw new HttpError(413, most)
+        hash.update(chunk)
         yield chunk
       }
     }
@@ -280,15 +325,15 @@ export function createServer ({ hub, accounts, nodes, guard, tls = null, log = (
       fs.rmSync(where, { force: true })
       throw error
     }
-    const kept = hub.store.addFile({ id, name, mime, size, owner: user.id })
-    return send(response, 200, { file: { id: kept.id, name: kept.name, mime: kept.mime, size: kept.size } })
+    const kept = hub.store.addFile({ id, name, mime, size, owner, origin })
+    return { file: { id: kept.id, name: kept.name, mime: kept.mime, size: kept.size }, sha256: hash.digest('hex') }
   }
 
-  function stored (request, response, found) {
+  function stored (request, response, found, { download = false } = {}) {
     const where = hub.store.filePath(found.id)
     let stat
     try { stat = fs.statSync(where) } catch { throw new HttpError(404, 'That file is gone.') }
-    const inline = INLINE.test(found.mime)
+    const inline = !download && INLINE.test(found.mime)
     const extra = {
       'Content-Type': inline ? found.mime : 'application/octet-stream',
       'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(found.name)}`,

@@ -6,16 +6,24 @@
 //   policy.exec   'any' (the default: whatever the hub's owner approved), 'allowlist' (only commands matching one of
 //                 policy.allow, regular expressions), or 'never' (this computer only reports what it is)
 //   policy.cwd    the folder commands start in when none is given (your home folder)
+//   policy.files  which of this computer's files the hub may take: 'any' (the default when exec is any), 'folders'
+//                 (only those in policy.folders, and the inbox: the default otherwise) or 'never' (none, and it
+//                 receives none either)
+//   policy.inbox  where files the hub sends are put (~/.dsh-hub/inbox); a name already there gets " (2)" and so on
 //
 // A job keeps running if the connection drops; its output is kept (the last 64 KB) and the hub hears how it went
-// when it is back. Finished jobs are forgotten after an hour.
+// when it is back. Finished jobs are forgotten after an hour. Moving a file is a job too: a download from the hub
+// picks up where it stopped when the connection breaks, and both sides check the SHA-256.
 import { execFile, spawn } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
 import WebSocket from 'ws'
-import { PROTOCOL } from './nodes.js'
+import { PROTOCOL, hashFile, megabytes } from './nodes.js'
 
 const run = promisify(execFile)
 const KEEP = 64 * 1024
@@ -25,9 +33,11 @@ const FORGET_MS = 3600 * 1000
 const TOOLS = ['ffmpeg', 'video2x', 'python', 'python3', 'node', 'git', 'docker', 'nvidia-smi', 'pwsh', 'bash']
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 
-export function defaultConfigPath () {
-  return path.join(process.env.DSH_HUB_HOME || path.join(os.homedir(), '.dsh-hub'), 'node.json')
-}
+const home = () => process.env.DSH_HUB_HOME || path.join(os.homedir(), '.dsh-hub')
+export function defaultConfigPath () { return path.join(home(), 'node.json') }
+export function defaultInbox () { return path.join(home(), 'inbox') }
+const RETRIES = 5
+const PROGRESS_MS = 2000
 
 export function readConfig (file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return null }
@@ -132,6 +142,53 @@ export function refusal (policy = {}, command) {
   return ''
 }
 
+const expand = (where, base) => path.resolve(base, String(where).replace(/^~(?=$|[\\/])/, os.homedir()))
+const inside = (where, folder) => {
+  const relative = path.relative(path.resolve(folder), where)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+/** Why this computer's own policy refuses to let the hub take (or, with `where` null, send it) a file, or ''. */
+export function fileRefusal (policy = {}, where, inbox) {
+  const files = policy.files ?? ((policy.exec ?? 'any') === 'any' ? 'any' : 'folders')
+  if (files === 'never') return 'this computer does not swap files with the hub (its file policy is never)'
+  if (where == null || files === 'any') return ''
+  if (files !== 'folders') return `this computer's file policy (${files}) is not one it knows`
+  const allowed = [inbox, ...(policy.folders || [])].some(folder => {
+    // compare real paths, so a link inside an allowed folder can't point out of it
+    let real = where
+    try { real = fs.realpathSync(where) } catch { /* checked as given */ }
+    let base = folder
+    try { base = fs.realpathSync(folder) } catch { /* not there */ }
+    return inside(real, base) || inside(where, folder)
+  })
+  return allowed ? '' : "that file is not in a folder this computer's file policy lets the hub take from"
+}
+
+/** A free name for `name` in `folder`: "video.mp4", else "video (2).mp4"… */
+export function freeName (folder, name) {
+  const clean = path.basename(String(name).replace(/\\/g, '/')).replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_').replace(/^\.+/, '') || 'file'
+  const { name: stem, ext } = path.parse(clean)
+  for (let count = 1; ; count++) {
+    const candidate = path.join(folder, count === 1 ? clean : `${stem} (${count})${ext}`)
+    if (!fs.existsSync(candidate) && !fs.existsSync(candidate + '.part')) return candidate
+  }
+}
+
+/** Progress lines for a file job, at most every two seconds. */
+function progress (job, total, verb) {
+  let last = 0
+  const started = Date.now()
+  return (done, final = false) => {
+    const at = Date.now()
+    if (!final && at - last < PROGRESS_MS) return
+    last = at
+    const rate = done / Math.max(0.5, (at - started) / 1000)
+    const share = total ? ` (${Math.floor(done / total * 100)}%)` : ''
+    job.say(`${verb} ${megabytes(done)}${total ? ` of ${megabytes(total)}` : ''}${share} · ${megabytes(rate)}/s\n`)
+  }
+}
+
 function killTree (child) {
   if (!child.pid) return
   if (process.platform === 'win32') {
@@ -143,7 +200,7 @@ function killTree (child) {
 }
 
 export class NodeAgent {
-  constructor ({ config, log = () => {}, connect = (url, options) => new WebSocket(url, options) }) {
+  constructor ({ config, log = () => {}, inbox, connect = (url, options) => new WebSocket(url, options) }) {
     if (!config?.hub || !config?.id || !config?.secret) throw new Error('This computer has not joined a hub yet.')
     this.config = config
     this.log = log
@@ -152,6 +209,7 @@ export class NodeAgent {
     this.retry = 0
     this.stopped = false
     this.ws = null
+    this.inboxFolder = inbox
   }
 
   start () { this.stopped = false; this.#open() }
@@ -214,15 +272,50 @@ export class NodeAgent {
     if (op === 'jobs') return this.#report()
     if (op === 'cancel') {
       const job = this.jobs.get(args.job)
-      if (job && job.status === 'running') { job.cancelled = true; killTree(job.child) }
+      if (job && job.status === 'running') {
+        job.cancelled = true
+        if (job.child) killTree(job.child)
+        job.abort?.abort()
+      }
       return { ok: true }
     }
+    if (['exec', 'download', 'upload'].includes(op) && !/^j[0-9a-f]{10}$/.test(String(args.job))) throw new Error('bad job id')
     if (op === 'exec') return this.#exec(args)
+    if (op === 'download') return this.#download(args)
+    if (op === 'upload') return this.#upload(args)
     throw new Error(`unknown operation ${op}`)
   }
 
-  #exec ({ job: id, command, cwd, shell }) {
+  /** A job's record here: its output goes to the hub in batches, its end once. */
+  #job (id) {
     if (typeof id !== 'string' || !/^j[0-9a-f]{10}$/.test(id)) throw new Error('bad job id')
+    const job = { id, child: null, abort: null, status: 'running', code: null, error: '', cancelled: false, result: null,
+      tail: '', buffer: '', ended: 0 }
+    const flush = () => {
+      clearTimeout(job.flushing)
+      job.flushing = null
+      if (!job.buffer) return
+      this.#send({ t: 'job', job: id, event: 'output', stream: 'stdout', data: job.buffer })
+      job.buffer = ''
+    }
+    job.say = text => {
+      job.tail = (job.tail + text).slice(-KEEP)
+      job.buffer += text
+      if (job.buffer.length >= FLUSH_BYTES) flush()
+      else if (!job.flushing) job.flushing = setTimeout(flush, FLUSH_MS)
+    }
+    job.finish = (code, error = '', result = null) => {
+      if (job.status !== 'running') return
+      flush()
+      Object.assign(job, { status: 'ended', code, error, result, ended: Date.now(), child: null, abort: null })
+      this.#send({ t: 'job', job: id, event: 'exit', code, error, cancelled: job.cancelled, result })
+      setTimeout(() => this.jobs.delete(id), FORGET_MS).unref()
+    }
+    this.jobs.set(id, job)
+    return job
+  }
+
+  #exec ({ job: id, command, cwd, shell }) {
     if (this.jobs.has(id)) return { ok: true } // a call repeated after a reconnect
     if (typeof command !== 'string' || !command.trim()) throw new Error('no command')
     const why = refusal(this.config.policy, command)
@@ -231,39 +324,117 @@ export class NodeAgent {
     if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) throw new Error(`no folder ${folder} on this computer`)
     const [program, argv, extra] = shellCommand(command, shell)
     const child = spawn(program, argv, { cwd: folder, windowsHide: true, detached: process.platform !== 'win32', ...extra })
-    const job = { id, child, status: 'running', code: null, error: '', cancelled: false, tail: '', buffer: '', ended: 0 }
-    this.jobs.set(id, job)
+    const job = this.#job(id)
+    job.child = child
     this.log('exec', { job: id, command: command.slice(0, 200), cwd: folder })
-    const flush = () => {
-      clearTimeout(job.flushing)
-      job.flushing = null
-      if (!job.buffer) return
-      this.#send({ t: 'job', job: id, event: 'output', stream: 'stdout', data: job.buffer })
-      job.buffer = ''
-    }
-    const take = chunk => {
-      const text = chunk.toString('utf8')
-      job.tail = (job.tail + text).slice(-KEEP)
-      job.buffer += text
-      if (job.buffer.length >= FLUSH_BYTES) flush()
-      else if (!job.flushing) job.flushing = setTimeout(flush, FLUSH_MS)
-    }
+    const take = chunk => job.say(chunk.toString('utf8'))
     child.stdout.on('data', take)
     child.stderr.on('data', take)
-    const finish = (code, error = '') => {
-      if (job.status !== 'running') return
-      flush()
-      Object.assign(job, { status: 'ended', code, error, ended: Date.now(), child: null })
-      this.#send({ t: 'job', job: id, event: 'exit', code, error, cancelled: job.cancelled })
-      setTimeout(() => this.jobs.delete(id), FORGET_MS).unref()
-    }
-    child.on('error', error => finish(null, error.message))
-    child.on('close', (code, signal) => finish(code, signal ? `stopped by ${signal}` : ''))
+    child.on('error', error => job.finish(null, error.message))
+    child.on('close', (code, signal) => job.finish(code, signal ? `stopped by ${signal}` : ''))
     return { ok: true, pid: child.pid }
+  }
+
+  get inbox () { return expand(this.config.policy?.inbox || this.inboxFolder || defaultInbox(), os.homedir()) }
+  #auth () { return { Authorization: `Bearer ${this.config.id}.${this.config.secret}` } }
+
+  /** Fetch a file from the hub into the inbox, picking up where it stopped if the connection breaks. */
+  #download ({ job: id, ticket, name, size }) {
+    if (this.jobs.has(id)) return { ok: true }
+    const why = fileRefusal(this.config.policy, null, this.inbox)
+    if (why) { this.log('download_refused', { why }); throw new Error(why) }
+    fs.mkdirSync(this.inbox, { recursive: true })
+    const target = freeName(this.inbox, name)
+    const part = target + '.part'
+    fs.writeFileSync(part, '', { flag: 'wx' }) // claim the name now
+    const job = this.#job(id)
+    job.abort = new AbortController()
+    const total = Number(size) || 0
+    const report = progress(job, total, 'received')
+    this.log('download', { job: id, name, to: target })
+    const url = `${this.config.hub}/api/nodes/download?ticket=${encodeURIComponent(ticket)}`
+    ;(async () => {
+      let tries = 0
+      while (true) {
+        const have = fs.statSync(part).size
+        if (total && have >= total) break
+        try {
+          const response = await fetch(url, { headers: { ...this.#auth(), ...(have ? { Range: `bytes=${have}-` } : {}) }, signal: job.abort.signal })
+          if (!response.ok) {
+            const answer = await response.json().catch(() => ({}))
+            const error = new Error(answer.error || `the hub said ${response.status}`)
+            error.final = response.status < 500
+            throw error
+          }
+          if (have && response.status !== 206) fs.truncateSync(part, 0) // the hub sent it all again
+          let done = response.status === 206 ? have : 0
+          const counter = async function * (source) {
+            for await (const chunk of source) { done += chunk.length; report(done); yield chunk }
+          }
+          await pipeline(Readable.fromWeb(response.body), counter, fs.createWriteStream(part, { flags: 'a' }))
+          report(done, true)
+          break
+        } catch (error) {
+          if (job.cancelled || error.final || ++tries > RETRIES) throw error
+          job.say(`connection lost (${error.message}); trying again…\n`)
+          await new Promise(resolve => setTimeout(resolve, Math.min(30000, 1000 * 2 ** tries)))
+        }
+      }
+      const got = fs.statSync(part).size
+      if (total && got !== total) throw new Error(`got ${got} bytes, not ${total}`)
+      fs.renameSync(part, target)
+      const sha256 = await hashFile(target)
+      job.say(`saved as ${target}\n`)
+      return { path: target, size: got, sha256 }
+    })().then(
+      result => job.finish(0, '', result),
+      error => {
+        fs.rmSync(part, { force: true })
+        job.finish(null, job.cancelled ? 'stopped' : error.message)
+      })
+    return { ok: true, path: target }
+  }
+
+  /** Send one of this computer's files to the hub, if this computer's file policy allows it. */
+  #upload ({ job: id, ticket, path: given, limit }) {
+    if (this.jobs.has(id)) return { ok: true }
+    if (typeof given !== 'string' || !given.trim()) throw new Error('no file given')
+    const where = expand(given.trim(), this.config.policy?.cwd || os.homedir())
+    const why = fileRefusal(this.config.policy, where, this.inbox)
+    if (why) { this.log('upload_refused', { why, path: where }); throw new Error(why) }
+    let stat
+    try { stat = fs.statSync(where) } catch { throw new Error(`there is no file ${where} on this computer`) }
+    if (!stat.isFile()) throw new Error(`${where} is a folder, not a file: zip it first`)
+    if (limit && stat.size > limit) throw new Error(`${where} is ${megabytes(stat.size)}; the hub takes at most ${megabytes(limit)}`)
+    const job = this.#job(id)
+    job.abort = new AbortController()
+    const report = progress(job, stat.size, 'sent')
+    this.log('upload', { job: id, path: where })
+    const name = path.basename(where)
+    const url = `${this.config.hub}/api/nodes/upload?ticket=${encodeURIComponent(ticket)}&name=${encodeURIComponent(name)}`
+    ;(async () => {
+      const hash = crypto.createHash('sha256')
+      let done = 0
+      const source = fs.createReadStream(where)
+      const counted = Readable.from((async function * () {
+        for await (const chunk of source) { hash.update(chunk); done += chunk.length; report(done); yield chunk }
+      })())
+      const response = await fetch(url, {
+        method: 'POST', body: counted, duplex: 'half', signal: job.abort.signal,
+        headers: { ...this.#auth(), 'Content-Type': 'application/octet-stream' },
+      })
+      const answer = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(answer.error || `the hub said ${response.status}`)
+      report(done, true)
+      const sha256 = hash.digest('hex')
+      if (answer.sha256 !== sha256) throw new Error("the hub's copy differs from this computer's (SHA-256)")
+      return { path: where, name, size: done, sha256, file: answer.file?.id }
+    })().then(result => job.finish(0, '', result), error => job.finish(null, job.cancelled ? 'stopped' : error.message))
+    return { ok: true }
   }
 
   #report () {
     return [...this.jobs.values()].map(job => ({ job: job.id, status: job.status, code: job.code, error: job.error,
-      cancelled: job.cancelled, tail: job.tail }))
+      cancelled: job.cancelled, tail: job.tail, result: job.result }))
   }
 }

@@ -92,7 +92,7 @@
   function computers(body, options = {}) {
     if (state().user.role !== "owner") { body.append(make("p", "", "Only the owner manages computers.")); return; }
     body.append(make("p", "muted", "Each computer runs DSH with the dsh-hub plugin as a node (or `dsh-hub node`) and " +
-      "connects out to this hub: it needs no open port. A bot asks you before running anything on a computer whose " +
+      "connects out to this hub: it needs no open port. A bot asks you before running anything or moving a file on a computer whose " +
       "policy is ask; the computer's own policy file has the last word."));
     const add = make("form", "settings-form add-computer");
     const name = textInput("text", "name", "e.g. ROG", "off");
@@ -134,14 +134,14 @@
       for (const fact of facts) list.append(make("li", "", fact));
       card.append(list);
       const policy = make("select");
-      for (const [value, label] of [["ask", "Ask me before each command"], ["always", "Run without asking"], ["never", "Never run commands"]]) {
+      for (const [value, label] of [["ask", "Ask me first (commands and files)"], ["always", "Let bots use it without asking"], ["never", "Bots can't use it"]]) {
         const option = make("option", "", label);
         option.value = value;
         policy.append(option);
       }
       policy.value = node.policy;
       policy.onchange = async () => {
-        if (policy.value === "always" && !confirm(`Let bots run any command on ${node.name} without asking you?`)) { policy.value = node.policy; return; }
+        if (policy.value === "always" && !confirm(`Let bots run any command and move any file on ${node.name} without asking you?`)) { policy.value = node.policy; return; }
         try { await api("api/nodes/update", { id: node.id, policy: policy.value }); } catch (error) { toast(error.message); }
       };
       const actions = make("div", "node-actions");

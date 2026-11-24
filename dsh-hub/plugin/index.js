@@ -26,7 +26,10 @@
 //       role: node
 //       hub: http://192.168.1.10:4180
 //       code: ABCD-EFGH          # only the first time; the node keeps its secret in <DSH home>/dsh-hub/node.json
-//       policy: { exec: any }    # any, allowlist (with allow: [patterns]) or never: this computer's own last word
+//       policy:                  # this computer's own last word; the hub can't change it
+//         exec: any              # any, allowlist (with allow: [patterns]) or never
+//         files: any             # which files the hub may take: any, folders (with folders: [paths]) or never
+//         inbox: ~/Videos/hub    # where files from the hub go (default <DSH home>/dsh-hub/inbox)
 import os from 'node:os'
 import path from 'node:path'
 import { NodeAgent, enroll, readConfig, writeConfig } from '../lib/node-agent.js'
@@ -97,7 +100,8 @@ function node (ctx, config) {
   let agent = null
   let closed = false
   const started = (async () => {
-    const file = path.join(await home(), 'node.json')
+    const folder = await home()
+    const file = path.join(folder, 'node.json')
     let kept = readConfig(file)
     if (!kept?.secret || (config.hub && kept.hub && new URL(config.hub).origin !== new URL(kept.hub).origin)) {
       if (!config.hub || !config.code) {
@@ -111,7 +115,7 @@ function node (ctx, config) {
     if (config.tools) kept.tools = config.tools
     writeConfig(file, kept)
     if (closed) return
-    agent = new NodeAgent({ config: kept, log })
+    agent = new NodeAgent({ config: kept, log, inbox: path.join(folder, 'inbox') })
     agent.start()
   })()
   started.catch(error => log('start_failed', { error: String(error?.message || error) }))

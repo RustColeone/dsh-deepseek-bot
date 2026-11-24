@@ -6,14 +6,22 @@
 // the SHA-256). From then on it opens the websocket /node with `Authorization: Bearer <id>.<secret>`.
 //
 // The wire (JSON, one object per message):
-//   hub → node   { t: 'call', id, op, args }         op: info | exec | cancel | jobs
+//   hub → node   { t: 'call', id, op, args }         op: info | exec | download | upload | cancel | jobs
 //   node → hub   { t: 'result', id, ok, value, error }
 //                { t: 'hello', info, jobs }          first, and again after every reconnect
-//                { t: 'job', job, event: 'output', stream, data } | { t: 'job', job, event: 'exit', code, signal, error }
+//                { t: 'job', job, event: 'output', stream, data }
+//                { t: 'job', job, event: 'exit', code, error, cancelled, result }
 //
-// A job is one command run on a node. Its output is kept here (the last 256 KB of it) while it runs and after, so
-// a chat can look at it later; the node keeps running it if the connection drops and says how it went when it is back.
+// A job is one command run on a node, or one file moved between the hub and a node. Its output is kept here (the
+// last 256 KB of it) while it runs and after, so a chat can look at it later; the node keeps at it if the connection
+// drops and says how it went when it is back.
+//
+// Files: the hub never pushes a file down the websocket. It makes a ticket (32 random bytes, for one node, one file
+// and one direction, for an hour) and tells the node; the node then fetches GET /api/nodes/download or sends
+// POST /api/nodes/upload over plain HTTP with its own secret and the ticket. Both sides check the SHA-256.
 import crypto from 'node:crypto'
+import fs from 'node:fs'
+import { pipeline } from 'node:stream/promises'
 import { sha256, Throttle } from './auth.js'
 import { now } from './store.js'
 
@@ -22,6 +30,8 @@ const PAIRING_MINUTES = 10
 const KEEP = 256 * 1024 // characters of a job's output kept
 const JOBS = 300 // jobs remembered
 const CALL_SECONDS = 30
+const TICKET_SECONDS = 3600
+const TICKET = /^[A-Za-z0-9_-]{43}$/
 const NODE_NAME = /^[\p{L}\p{N}][\p{L}\p{N} _.'-]{0,39}$/u
 
 const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -32,10 +42,20 @@ export function checkNodeName (name) {
   return NODE_NAME.test(String(name || '').trim()) ? '' : 'A computer\'s name is 1 to 40 letters, digits, spaces, dots, dashes or apostrophes.'
 }
 
+export const megabytes = bytes => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : `${Math.max(0.1, bytes / 1024 ** 2).toFixed(1)} MB`
+
+/** The SHA-256 of a file on this computer, as hex. */
+export async function hashFile (where) {
+  const hash = crypto.createHash('sha256')
+  await pipeline(fs.createReadStream(where), hash)
+  return hash.digest('hex')
+}
+
 class Job {
-  constructor ({ id, node, command, cwd, shell, by, chat }) {
-    Object.assign(this, { id, node: node.id, nodeName: node.name, command, cwd: cwd || '', shell: shell || '',
-      by: by || '', chat: chat || '', status: 'starting', code: null, error: '', started: now(), ended: null })
+  constructor ({ id, kind = 'command', node, command, cwd, shell, by, owner, chat, bot }) {
+    Object.assign(this, { id, kind, node: node.id, nodeName: node.name, command, cwd: cwd || '', shell: shell || '',
+      by: by || '', owner: owner ?? null, chat: chat || '', bot: bot || '', status: 'starting', code: null, error: '',
+      result: null, started: now(), ended: null })
     this.output = ''
     this.dropped = 0
     this.waiters = new Set()
@@ -49,9 +69,9 @@ class Job {
       this.dropped += cut
     }
   }
-  finish (status, { code = null, error = '' } = {}) {
+  finish (status, { code = null, error = '', result = null } = {}) {
     if (this.done) return
-    Object.assign(this, { status, code, error, ended: now() })
+    Object.assign(this, { status, code, error, result: result ?? this.result, ended: now() })
     for (const waiter of this.waiters) waiter()
     this.waiters.clear()
   }
@@ -71,8 +91,9 @@ class Job {
     return cut > 0 ? `[… ${cut} earlier characters not shown]\n${text}` : text
   }
   view (characters = 0) {
-    return { id: this.id, node: this.nodeName, command: this.command, cwd: this.cwd, status: this.status,
-      code: this.code, error: this.error || undefined, started: this.started, ended: this.ended,
+    return { id: this.id, kind: this.kind, node: this.nodeName, command: this.command, cwd: this.cwd || undefined,
+      status: this.status, code: this.code, error: this.error || undefined, result: this.result ?? undefined,
+      file: this.kind === 'get' ? this.file : undefined, started: this.started, ended: this.ended,
       seconds: Math.round(((this.ended ?? now()) - this.started) * 10) / 10,
       ...(characters ? { output: this.tail(characters) } : {}) }
   }
@@ -86,6 +107,7 @@ export class Nodes {
     this.onJob = onJob
     this.links = new Map() // node id -> { ws, info, calls: Map }
     this.jobs = new Map()
+    this.tickets = new Map() // SHA-256 of a ticket -> { node, way: 'down' | 'up', file, job, owner, limit, expires }
     this.enrolls = new Throttle({ limit: 10, window: 600, lock: 600 })
   }
 
@@ -186,8 +208,8 @@ export class Nodes {
         this.onJob(job, 'output')
       } else if (message.event === 'exit') {
         const code = Number.isInteger(message.code) ? message.code : null
-        job.finish(message.cancelled ? 'cancelled' : code === 0 ? 'done' : 'failed', { code, error: String(message.error || '') })
-        this.onJob(job, 'exit')
+        this.#ended(job, { status: message.cancelled ? 'cancelled' : code === 0 ? 'done' : 'failed', code,
+          error: String(message.error || ''), result: message.result ? clean(message.result) : null })
       }
     }
   }
@@ -202,10 +224,26 @@ export class Nodes {
       if (found.tail && found.tail.length > job.output.length) job.output = String(found.tail).slice(-KEEP)
       if (found.status === 'running') job.status = 'running'
       else {
-        job.finish(found.cancelled ? 'cancelled' : found.code === 0 ? 'done' : 'failed', { code: found.code ?? null, error: found.error || '' })
-        this.onJob(job, 'exit')
+        this.#ended(job, { status: found.cancelled ? 'cancelled' : found.code === 0 ? 'done' : 'failed',
+          code: found.code ?? null, error: found.error || '', result: found.result ? clean(found.result) : null })
       }
     }
+  }
+
+  /** A job ended on its node. A file it received is checked against the hub's own copy first. */
+  async #ended (job, { status, code, error, result }) {
+    if (job.done || job.ending) return
+    job.ending = true
+    if (job.kind === 'send' && status === 'done') {
+      try {
+        const ours = await hashFile(this.store.filePath(job.file.id))
+        if (result?.sha256 !== ours) { status = 'failed'; error = `the copy on ${job.nodeName} differs from the hub's (SHA-256)` }
+      } catch (problem) { status = 'failed'; error = `could not check the file: ${problem.message}` }
+    }
+    if (job.kind === 'get' && status === 'done' && !job.file) { status = 'failed'; error = error || 'the file never reached the hub' }
+    this.#spend(job.id)
+    job.finish(status, { code, error, result })
+    this.onJob(job, 'exit')
   }
 
   call (id, op, args = {}, seconds = CALL_SECONDS) {
@@ -242,25 +280,71 @@ export class Nodes {
     return near.length === 1 ? near[0] : null
   }
 
-  /** Start a command on a node (approval is the caller's business). Returns the job, already failed if it couldn't start. */
-  async run ({ node, command, cwd, shell, by, chat }) {
-    const job = new Job({ id: `j${crypto.randomBytes(5).toString('hex')}`, node, command, cwd, shell, by, chat })
+  #job (fields) {
+    const job = new Job({ id: `j${crypto.randomBytes(5).toString('hex')}`, ...fields })
     this.jobs.set(job.id, job)
     while (this.jobs.size > JOBS) {
       const oldest = [...this.jobs.values()].find(item => item.done)
       if (!oldest) break
       this.jobs.delete(oldest.id)
     }
-    this.log('job_started', { job: job.id, node: node.name, by, command: command.slice(0, 200) })
+    this.log('job_started', { job: job.id, kind: job.kind, node: job.nodeName, by: job.by, command: job.command.slice(0, 200) })
+    return job
+  }
+
+  async #start (job, op, args) {
     try {
-      await this.call(node.id, 'exec', { job: job.id, command, cwd: cwd || undefined, shell: shell || undefined })
+      await this.call(job.node, op, { job: job.id, ...args })
       if (job.status === 'starting') job.status = 'running'
     } catch (error) {
+      this.#spend(job.id)
       job.finish('failed', { error: error.message })
     }
     this.onJob(job, job.done ? 'exit' : 'start')
     return job
   }
+
+  #ticket (fields) {
+    const value = crypto.randomBytes(32).toString('base64url')
+    for (const [hash, ticket] of this.tickets) if (ticket.expires < now()) this.tickets.delete(hash)
+    this.tickets.set(sha256(value), { ...fields, expires: now() + TICKET_SECONDS })
+    return value
+  }
+  #spend (jobId) { for (const [hash, ticket] of this.tickets) if (ticket.job === jobId) this.tickets.delete(hash) }
+
+  /** Start a command on a node (approval is the caller's business). Returns the job, already failed if it couldn't start. */
+  async run ({ node, command, cwd, shell, by, owner, chat, bot }) {
+    const job = this.#job({ node, command, cwd, shell, by, owner, chat, bot })
+    return this.#start(job, 'exec', { command, cwd: cwd || undefined, shell: shell || undefined })
+  }
+
+  /** Send a file kept on the hub to a node's inbox. The job's result says where it is there. */
+  async send ({ node, file, by, owner, chat, bot }) {
+    const job = this.#job({ kind: 'send', node, command: `${file.name} (${megabytes(file.size)}) → ${node.name}`, by, owner, chat, bot })
+    job.file = { id: file.id, name: file.name, mime: file.mime, size: file.size }
+    const ticket = this.#ticket({ node: node.id, way: 'down', file: file.id, job: job.id })
+    return this.#start(job, 'download', { ticket, name: file.name, size: file.size })
+  }
+
+  /** Bring a file from a node to the hub, as `owner`'s. When it is there, job.file is the hub's file. */
+  async fetch ({ node, path: where, by, owner, chat, bot, limit }) {
+    const job = this.#job({ kind: 'get', node, command: `${node.name}: ${where} → the hub`, by, owner, chat, bot })
+    const ticket = this.#ticket({ node: node.id, way: 'up', job: job.id, owner, limit })
+    return this.#start(job, 'upload', { ticket, path: where, limit })
+  }
+
+  /** What a ticket a node shows allows, or null: it must be this node's, this way's, unexpired, for a live job. */
+  ticket (node, value, way) {
+    if (!node || !TICKET.test(String(value || ''))) return null
+    const ticket = this.tickets.get(sha256(String(value)))
+    if (!ticket || ticket.node !== node.id || ticket.way !== way || ticket.expires < now()) return null
+    const job = this.jobs.get(ticket.job)
+    if (!job || job.done) return null
+    return { ...ticket, job }
+  }
+
+  /** Spend a ticket as its one upload starts, so it can't be used twice. */
+  claim (value) { this.tickets.delete(sha256(String(value))) }
 
   job (id) { return this.jobs.get(id) ?? null }
   jobList ({ node, running } = {}) {

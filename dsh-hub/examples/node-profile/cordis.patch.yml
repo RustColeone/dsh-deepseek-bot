@@ -7,4 +7,6 @@
     code: ABCD-EFGH
     policy:
       exec: any          # any, allowlist (with allow: ["^video2x ", "^nvidia-smi"]) or never
+      files: any         # files the hub may take: any, folders (with folders: ["~/Videos"]) or never
+      # inbox: ~/Videos/from-hub   # where files sent from the hub land
     tools: [video2x, ffmpeg]   # also report where these are

@@ -1,6 +1,7 @@
 // The hub end to end, with the echo brain: accounts, the guard, chatting, and a real node on this computer running a
 // command after it is approved.
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
@@ -180,7 +181,7 @@ describe('hub', () => {
     assert.equal(config.name, 'Test PC')
     // The code works once.
     await assert.rejects(enroll({ hub: base, code: pairing.code, info: {} }), /wrong, used or expired/)
-    agent = new NodeAgent({ config, log: () => {} })
+    agent = new NodeAgent({ config, log: () => {}, inbox: path.join(folder, 'node-inbox') })
     agent.start()
     await page.next(event => event.type === 'nodes' && event.nodes.some(node => node.name === 'Test PC' && node.online && node.info.cpu))
 
@@ -221,6 +222,68 @@ describe('hub', () => {
     page.send({ type: 'send', conversation: chat, id: 'm6', text: 'run Test PC: echo nope' })
     const reply = await page.next(event => event.type === 'message' && event.item.kind === 'text', 20000)
     assert.match(reply.item.text, /policy is never/)
+    agent.config.policy = { exec: 'any' }
+  })
+
+  test('a file goes from the chat to a computer, and one comes back into the chat', async () => {
+    const chat = hub.hub.store.chats(1)[0].id
+    const node = hub.nodes.list()[0]
+    assert.equal(node.policy, 'always') // from the last test: no card for the way there
+    // The phone's upload: the file itself as the body.
+    const video = crypto.randomBytes(300 * 1024 + 7)
+    const uploaded = await (await fetch(`${base}/api/upload?name=clip.mp4`, {
+      method: 'POST', headers: { 'Content-Type': 'video/mp4', Origin: base, Cookie: cookie }, body: video,
+    })).json()
+    assert.equal(uploaded.file.size, video.length)
+    page.send({ type: 'send', conversation: chat, id: 'm7', text: 'send to Test PC', files: [uploaded.file.id] })
+    const sent = await page.next(event => event.type === 'update' && event.item.data?.kind === 'send' &&
+      !['starting', 'running'].includes(event.item.data.status), 20000)
+    assert.equal(sent.item.data.status, 'done', sent.item.data.error)
+    const there = sent.item.data.result.path
+    assert.equal(path.dirname(there), path.join(folder, 'node-inbox'))
+    assert.ok(fs.readFileSync(there).equals(video))
+    assert.match(sent.item.data.output, /received .*100%/)
+    await page.next(event => event.type === 'message' && event.item.kind === 'text', 20000)
+
+    // The way back asks first; the file arrives in the chat as the bot's, and plays from the hub.
+    await post('/api/nodes/update', { id: node.id, policy: 'ask' })
+    const result = path.join(folder, 'upscaled.mp4')
+    const made = crypto.randomBytes(200 * 1024)
+    fs.writeFileSync(result, made)
+    page.send({ type: 'send', conversation: chat, id: 'm8', text: `get Test PC: ${result}` })
+    const card = await page.next(event => event.type === 'message' && event.item.kind === 'approval')
+    assert.equal(card.item.data.title, 'Bring a file from Test PC?')
+    page.send({ type: 'decide', message: card.item.id, decision: 'approved' })
+    const arrived = await page.next(event => event.type === 'message' && event.item.kind === 'file', 20000)
+    assert.equal(arrived.item.speaker, 'Parrot') // the bot that asked for it: its turn, as it spoke last here
+    const [file] = arrived.item.files
+    assert.equal(file.name, 'upscaled.mp4')
+    assert.equal(file.mime, 'video/mp4')
+    const served = await fetch(`${base}/files/${file.id}`, { headers: { Cookie: cookie } })
+    assert.equal(served.status, 200)
+    assert.ok(Buffer.from(await served.arrayBuffer()).equals(made))
+    const reply = await page.next(event => event.type === 'message' && event.item.kind === 'text', 20000)
+    assert.match(reply.item.text, /"status": "done"/)
+  })
+
+  test('a file ticket is one computer\'s own, and the computer\'s file policy has the last word', async () => {
+    const chat = hub.hub.store.chats(1)[0].id
+    const node = hub.nodes.list()[0]
+    await post('/api/nodes/update', { id: node.id, policy: 'always' })
+    assert.equal((await fetch(`${base}/api/nodes/download?ticket=${'a'.repeat(43)}`)).status, 401)
+    const auth = { Authorization: `Bearer ${agent.config.id}.${agent.config.secret}` }
+    assert.equal((await fetch(`${base}/api/nodes/download?ticket=${'a'.repeat(43)}`, { headers: auth })).status, 403)
+    assert.equal((await fetch(`${base}/api/nodes/upload?ticket=${'a'.repeat(43)}&name=x.txt`, { method: 'POST', headers: auth, body: 'x' })).status, 403)
+
+    agent.config.policy = { exec: 'any', files: 'never' }
+    page.send({ type: 'send', conversation: chat, id: 'm9', text: `get Test PC: ${path.join(folder, 'upscaled.mp4')}` })
+    const never = await page.next(event => event.type === 'message' && event.item.kind === 'text', 20000)
+    assert.match(never.item.text, /file policy is never/)
+
+    agent.config.policy = { exec: 'any', files: 'folders', folders: [path.join(folder, 'allowed')] }
+    page.send({ type: 'send', conversation: chat, id: 'm10', text: `get Test PC: ${path.join(folder, 'upscaled.mp4')}` })
+    const outside = await page.next(event => event.type === 'message' && event.item.kind === 'text', 20000)
+    assert.match(outside.item.text, /not in a folder/)
     agent.config.policy = { exec: 'any' }
   })
 
