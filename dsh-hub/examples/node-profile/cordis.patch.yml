@@ -1,0 +1,10 @@
+# Any other computer (the ROG, say): a node of the hub. Get a pairing code on the hub's page (Computers, Add), put it
+# here, run `dsh --profile node` once; after that the code is no longer needed (the node keeps its own secret).
+- id: dsh-hub
+  config:
+    role: node
+    hub: http://192.168.1.10:4180
+    code: ABCD-EFGH
+    policy:
+      exec: any          # any, allowlist (with allow: ["^video2x ", "^nvidia-smi"]) or never
+    tools: [video2x, ffmpeg]   # also report where these are

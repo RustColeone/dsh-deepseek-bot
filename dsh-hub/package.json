@@ -1,0 +1,60 @@
+{
+  "name": "dsh-hub",
+  "version": "0.1.0",
+  "description": "Make one DeepSeek Harness the hub of your computers: a chat page for your phone and browsers, accounts, and the other computers joined as nodes the agent can run work on.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "main": "plugin/index.js",
+  "bin": {
+    "dsh-hub": "bin/dsh-hub.js"
+  },
+  "exports": {
+    ".": "./plugin/index.js",
+    "./lib/*": "./lib/*.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "plugin",
+    "static",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "hub": "node bin/dsh-hub.js hub",
+    "node": "node bin/dsh-hub.js node"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "self-hosted",
+    "remote",
+    "agent"
+  ],
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-home-paths": "*",
+    "@deepseek-ai/dsh-llm": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-home-paths": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

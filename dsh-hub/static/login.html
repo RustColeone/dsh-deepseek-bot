@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="light dark">
+  <title>Sign in · {{title}}</title>
+  <script src="static/prefs.js"></script>
+  <link rel="stylesheet" href="static/style.css">
+  <link rel="stylesheet" href="static/hub.css">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <script defer src="static/sign-in.js"></script>
+</head>
+<body class="login-body">
+  <form class="login" id="sign-in" data-api="api/login">
+    <div class="login-mark">🛰️</div>
+    <h1>{{title}}</h1>
+    <p>Sign in to talk to your hub.</p>
+    <input type="text" name="name" autofocus autocomplete="username" autocapitalize="none" spellcheck="false"
+           placeholder="Name" aria-label="Name" required>
+    <input type="password" name="password" autocomplete="current-password" placeholder="Password" aria-label="Password" required>
+    <button type="submit">Sign in</button>
+    <p class="login-error" id="error" role="alert"></p>
+    <p class="login-note" id="insecure" hidden>⚠️ This page isn't on https or your home network: your password crosses
+      the internet readable. Prefer Tailscale or WireGuard.</p>
+  </form>
+</body>
+</html>

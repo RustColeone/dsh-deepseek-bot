@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="light dark">
+  <title>Set up · {{title}}</title>
+  <script src="static/prefs.js"></script>
+  <link rel="stylesheet" href="static/style.css">
+  <link rel="stylesheet" href="static/hub.css">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <script defer src="static/sign-in.js"></script>
+</head>
+<body class="login-body">
+  <form class="login" id="sign-in" data-api="api/setup">
+    <div class="login-mark">🛰️</div>
+    <h1>Set up {{title}}</h1>
+    <p>Make the owner's account. The setup code is in the console of the computer the hub runs on.</p>
+    <input type="text" name="code" autofocus autocomplete="off" autocapitalize="characters" spellcheck="false"
+           placeholder="Setup code (XXXX-XXXX-XXXX)" aria-label="Setup code" required>
+    <input type="text" name="name" autocomplete="username" autocapitalize="none" spellcheck="false"
+           placeholder="Your name" aria-label="Your name" required>
+    <input type="password" name="password" autocomplete="new-password" placeholder="Password (10+ characters)"
+           aria-label="Password" minlength="10" required>
+    <input type="password" name="again" autocomplete="new-password" placeholder="Password again" aria-label="Password again" required>
+    <button type="submit">Make the account</button>
+    <p class="login-error" id="error" role="alert"></p>
+    <p class="login-note" id="insecure" hidden>⚠️ This page isn't on https or your home network: your password crosses
+      the internet readable. Prefer Tailscale or WireGuard.</p>
+  </form>
+</body>
+</html>

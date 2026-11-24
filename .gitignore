@@ -1,0 +1,6 @@
+# DeepSeek Harness source, cloned read-only for reference
+.ref/
+node_modules/
+# a hub's or node's data when run from the repo (accounts, chats, keys)
+dsh-hub/data/
+dsh-hub/.data/

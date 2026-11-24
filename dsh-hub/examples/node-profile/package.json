@@ -1,0 +1,15 @@
+{
+  "name": "dsh-hub-node-profile",
+  "private": true,
+  "dependencies": {
+    "dsh-hub": "file:C:/Users/LeoNgan/Desktop/Projects/Deepseek-bots/dsh-hub"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "dsh-hub"
+      ]
+    }
+  }
+}

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="light dark">
+  <title>{{title}}</title>
+  <script src="static/prefs.js"></script>
+  <link rel="stylesheet" href="static/style.css">
+  <link rel="stylesheet" href="static/hub.css">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+        integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
+          integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg"
+          crossorigin="anonymous"></script>
+  <script defer src="static/markdown.js"></script>
+  <script defer src="static/app.js"></script>
+  <script defer src="static/settings.js"></script>
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="site-header">
+      <span class="site-brand"><span class="site-name">{{title}}</span><span class="site-page"></span></span>
+      <div class="site-end">
+        <button class="user-tab" id="user-tab" type="button" title="Settings">⚙️ <span id="user-name"></span></button>
+      </div>
+    </header>
+    <div class="scrim" id="scrim" hidden></div>
+    <aside class="sidebar" id="sidebar" aria-labelledby="chats-title">
+      <div class="sidebar-head">
+        <h1 class="sidebar-title" id="chats-title">Chats</h1>
+        <button class="new-chat" id="new-chat" type="button">New chat</button>
+        <button class="icon-button only-narrow" id="close-sidebar" type="button" aria-label="Close">✕</button>
+      </div>
+      <label class="chat-search">
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        <span class="sr-only">Search chats</span>
+        <input type="search" id="chat-search" placeholder="Search chats" autocomplete="off">
+      </label>
+      <nav class="chats" id="chats" aria-label="Your chats"></nav>
+      <div class="resizer" id="resize-sidebar" role="separator" aria-orientation="vertical"
+           title="Drag to resize · double-click to reset"></div>
+    </aside>
+
+    <main class="room">
+      <header class="topbar">
+        <button class="icon-button" id="toggle-sidebar" type="button" aria-label="Chats" aria-pressed="false"
+                title="Chats"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+        <div class="chat-faces" id="chat-faces"></div>
+        <div class="chat-heading">
+          <h2 class="chat-title" id="chat-title">Chat</h2>
+          <div class="chat-sub" id="chat-sub"></div>
+        </div>
+        <div class="connection" id="connection" aria-live="polite"></div>
+        <button class="icon-button members-button" id="toggle-members" type="button" aria-label="Who and what is here"
+                aria-pressed="false" title="Who and what is here"><svg aria-hidden="true" width="20" height="20"
+          viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/>
+          <circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.2A5 5 0 0 1 21.5 19"/></svg></button>
+      </header>
+
+      <section class="messages" id="messages" aria-live="polite">
+        <div class="empty" id="empty">
+          <div class="empty-wave">👋</div>
+          <div class="empty-title" id="empty-title">Say hello.</div>
+          <div class="empty-text">Just talk. <kbd>@</kbd> someone to ask them, drop a file in, or ask to use one of your computers.</div>
+        </div>
+      </section>
+
+      <div class="typing" id="typing"></div>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <div class="palette" id="palette" role="listbox" hidden></div>
+        <div class="attachments" id="attachments"></div>
+        <div class="composer-row">
+          <label class="icon-button attach" title="Attach files">
+            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.5l-8 8a5 5 0 0 1-7-7l8.5-8.5a3.5 3.5 0 0 1 5 5L10 17.5a2 2 0 0 1-3-3l7.5-7.5"/></svg>
+            <span class="sr-only">Attach files</span><input type="file" id="file-input" multiple hidden>
+          </label>
+          <textarea id="input" rows="1" placeholder="Message…" aria-label="Message"></textarea>
+          <button class="send" id="send" type="submit">Send</button>
+        </div>
+      </form>
+    </main>
+
+    <aside class="members" id="members" aria-label="Who and what is here">
+      <div class="members-head">
+        <span id="members-title">In this chat</span>
+        <button class="icon-button only-narrow" id="close-members" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="member-list" id="member-list"></div>
+      <div class="computers" id="computers" hidden>
+        <div class="members-head computers-head">
+          <span>Computers</span>
+          <button class="small-button" id="add-computer" type="button">＋ Add</button>
+        </div>
+        <div class="computer-list" id="computer-list"></div>
+      </div>
+      <div class="resizer" id="resize-members" role="separator" aria-orientation="vertical"
+           title="Drag to resize · double-click to reset"></div>
+    </aside>
+  </div>
+  <div class="menu" id="chat-menu" role="menu" hidden></div>
+  <div class="viewer" id="viewer" hidden><img alt=""></div>
+  <div class="picker" id="picker" role="dialog" aria-modal="true" aria-labelledby="picker-title" hidden>
+    <form class="picker-card" id="picker-form">
+      <div class="picker-title" id="picker-title">New chat</div>
+      <div class="picker-hint">Who's in it? Pick one for a direct chat, several for a group.</div>
+      <div class="picker-list" id="picker-list"></div>
+      <div class="picker-actions">
+        <button class="picker-cancel" id="picker-cancel" type="button">Cancel</button>
+        <button class="picker-start" id="picker-start" type="submit">Start</button>
+      </div>
+    </form>
+  </div>
+  <div class="dialog" id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+    <div class="dialog-card">
+      <div class="dialog-head">
+        <h2 id="settings-title">Settings</h2>
+        <button class="icon-button" id="settings-close" type="button" aria-label="Close">✕</button>
+      </div>
+      <nav class="tabs" id="settings-tabs" role="tablist"></nav>
+      <div class="dialog-body" id="settings-body"></div>
+    </div>
+  </div>
+</body>
+</html>

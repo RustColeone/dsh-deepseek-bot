@@ -1,0 +1,18 @@
+# The main DSH: the hub. Copy this folder to <DSH home>/profiles/hub/, fix the file: path in package.json, install
+# (npm install in that folder), then run `dsh --profile hub`.
+- id: dsh-hub
+  config:
+    role: hub
+    port: 4180
+    access: lan          # home network and Tailscale; "anywhere" still needs an account, but use https then
+    title: Hub
+    bots:
+      - name: deepseek
+        display: DeepSeek
+        description: Your assistant on the hub.
+      - name: whale
+        display: Whale
+        description: The playful one.
+        prompt: >-
+          You are Whale, a cheerful, slightly lazy blue whale who helps the household with their computers.
+          You keep answers short and friendly.
