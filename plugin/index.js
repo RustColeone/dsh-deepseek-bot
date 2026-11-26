@@ -1,7 +1,14 @@
-// DeepSeek Harness plugin: this DSH as the hub of your computers (role: hub), or as one of them (role: node).
+// DeepSeek Harness plugin: this DSH as the hub of your computers (role: hub), as one of them (role: node), or neither
+// (off) until you choose.
+//
+// Choose on DSH's Plugins page (Plugins → dsh-hub, in the desktop app or DSH's web page; client.js), or on the command
+// line with `dsh-hub config` (bin/dsh-hub.js). Both write <DSH home>/dsh-hub/settings.json (lib/settings.js), and a
+// running DSH follows a change within seconds. A fresh install is off; a computer that already has a hub stays one.
+//
+// A profile's cordis.patch.yml may set any of it too, and then wins (the page shows those settings as locked):
 //
 // Hub (the main DSH): starts the hub's server (the chat page, accounts, nodes; lib/start.js) with DSH's agents as its
-// brain (brain.js). Settings in the profile's cordis.patch.yml:
+// brain (brain.js).
 //
 //   - id: dsh-hub
 //     config:
@@ -14,7 +21,7 @@
 //       tls: { cert: <file>, key: <file> }
 //       title: Hub
 //       maxUploadMB: 2048
-//       folder: <DSH home>/dsh-hub  # where the hub keeps its accounts, chats and files
+//       folder: <DSH home>/dsh-hub  # where the hub keeps its accounts, chats and files (and settings.json)
 //       bots:                    # who talks; default: one, DeepSeek
 //         - { name: deepseek, display: DeepSeek, description: ..., prompt: ... }
 //       model: { provider: ..., model: ... }   # default: DSH's default model
@@ -40,12 +47,14 @@
 //
 // With DSH, a node also has agents: the bots living here and the agent for tasks from the hub, using this computer's
 // own model account (node-brain.js). `dsh-hub node` without DSH only runs commands and moves files.
-import os from 'node:os'
+import fs from 'node:fs'
 import path from 'node:path'
 import { NodeAgent, enroll, readConfig, writeConfig } from '../lib/node-agent.js'
+import { dshHome, settingsFile } from '../lib/settings.js'
 import { consoleLog, startHub } from '../lib/start.js'
 import { computerTools } from '../lib/tools.js'
 import { dshBrain } from './brain.js'
+import { control, serve } from './control.js'
 import { nodeBrain } from './node-brain.js'
 
 export const name = 'dsh-hub'
@@ -59,7 +68,7 @@ async function home () {
     const { resolveDshHome } = await import('@deepseek-ai/dsh-home-paths')
     return path.join(resolveDshHome(), 'dsh-hub')
   } catch {
-    return process.env.DSH_HUB_HOME || path.join(os.homedir(), '.dsh-hub')
+    return process.env.DSH_HUB_HOME || path.join(dshHome(), 'dsh-hub')
   }
 }
 
@@ -74,50 +83,111 @@ function logger (ctx, prefix) {
   }
 }
 
-export function apply (ctx, config = {}) {
-  const role = config.role ?? 'hub'
-  if (role === 'node') return node(ctx, config)
-  if (role !== 'hub') throw new Error(`dsh-hub: role is hub or node, not ${role}`)
-  ctx.inject(HUB_SERVICES, scope => hub(scope, config))
+export function apply (ctx, profile = {}) {
+  profile = profile ?? {}
+  const log = logger(ctx, 'dsh-hub')
+  // DSH may unload this instance before it has finished starting (it reloads a plugin whose config it rewrites): from
+  // then on, this instance starts nothing and leaves the file to the next one
+  let disposed = false
+  let unwatch = () => {}
+  const ready = (async () => {
+    const folder = profile.folder ? path.resolve(profile.folder) : await home()
+    if (disposed) return null
+    const work = control({
+      folder, profile, log,
+      start: async (role, config, live) => {
+        if (role === 'off' || disposed) return null
+        // the role as a plugin of its own, so a change of settings unloads it whole (its agents, presets, server)
+        const fiber = ctx.plugin({
+          name: `dsh-hub-${role}`,
+          // (returns nothing: Cordis takes what apply returns for an effect)
+          apply: child => {
+            if (role === 'hub') child.inject(HUB_SERVICES, scope => hub(scope, config, folder, live))
+            else node(child, config, folder, live)
+          },
+        })
+        // a role that fails to load says so on the page
+        Promise.resolve(fiber).catch(error => {
+          live.error = String(error?.message ?? error)
+          log('start_failed', { role, error: String(error?.stack ?? error) })
+        })
+        return () => fiber.dispose()
+      },
+    })
+    // `dsh-hub config` writes the file while this runs (this instance's own listener: the next one has its own)
+    const file = settingsFile(folder)
+    const changed = () => { if (!disposed) work.refresh().catch(() => {}) }
+    fs.watchFile(file, { interval: 1500 }, changed)
+    unwatch = () => fs.unwatchFile(file, changed)
+    await work.refresh()
+    return work
+  })()
+  ready.catch(error => log('start_failed', { error: String(error?.stack || error) }))
+  ctx.effect(() => () => {
+    disposed = true
+    unwatch()
+    return ready.then(work => work?.close()).catch(() => {})
+  })
+  // the settings page's routes, where DSH serves a page (the desktop app, the web profile)
+  ctx.inject(['connection'], scope => serve(scope.connection, async () => {
+    const work = await ready
+    if (!work) throw new Error('dsh-hub is restarting; try again in a moment')
+    return work
+  }))
 }
 
-function hub (ctx, config) {
+function hub (ctx, config, folder, live) {
   const log = logger(ctx, 'dsh-hub')
   let running = null
   let closed = false
   const started = (async () => {
-    const folder = config.folder ? path.resolve(config.folder) : await home()
     const brain = await dshBrain(ctx, {
       bots: config.bots, title: config.title ?? 'Hub', model: config.model, permission: config.permission ?? 'workspace-write',
       workspace: config.workspace ?? path.join(folder, 'workspace'), log,
       toolDefinitions: computerTools(null).map(({ name, description, parameters }) => ({ name, description, parameters })),
     })
-    const hubRunning = await startHub({
-      folder: path.join(folder, 'hub'), host: config.host, port: config.port, access: config.access,
-      hostnames: config.hostnames, trustProxy: config.trustProxy, tls: config.tls, title: config.title,
-      maxUploadMB: config.maxUploadMB, brain, log,
-    })
+    let hubRunning
+    try {
+      hubRunning = await startHub({
+        folder: path.join(folder, 'hub'), host: config.host, port: config.port, access: config.access,
+        hostnames: config.hostnames, trustProxy: config.trustProxy, tls: config.tls, title: config.title,
+        maxUploadMB: config.maxUploadMB, brain, log,
+      })
+    } catch (error) {
+      await brain.close?.()
+      throw error
+    }
     if (closed) await hubRunning.close()
-    else running = hubRunning
+    else { running = hubRunning; live.hub = hubRunning }
   })()
-  started.catch(error => log('start_failed', { error: String(error?.stack || error) }))
+  started.catch(error => {
+    live.error = error?.code === 'EADDRINUSE' ? `port ${config.port ?? 4180} is in use: pick another one` : String(error?.message || error)
+    log('start_failed', { error: String(error?.stack || error) })
+  })
   ctx.effect(() => () => {
     closed = true
-    started.finally(() => running?.close()).catch(() => {})
+    live.hub = null
+    return started.catch(() => {}).then(() => running?.close())
   })
 }
 
-function node (ctx, config) {
-  const log = logger(ctx, 'dsh-hub node')
+function node (ctx, config, folder, live) {
+  const base = logger(ctx, 'dsh-hub node')
+  const log = (event, fields = {}) => {
+    if (event === 'connected') live.problem = null
+    if (['not_joined', 'removed'].includes(event)) live.problem = fields.hint
+    if (event === 'refused' && !live.problem) live.problem = `the hub refused this computer (${fields.status})`
+    if (event === 'connection_error') live.problem = `can't reach the hub: ${fields.error}`
+    base(event, fields)
+  }
   let agent = null
   let closed = false
   const started = (async () => {
-    const folder = config.folder ? path.resolve(config.folder) : await home()
     const file = path.join(folder, 'node.json')
     let kept = readConfig(file)
     if (!kept?.secret || (config.hub && kept.hub && new URL(config.hub).origin !== new URL(kept.hub).origin)) {
       if (!config.hub || !config.code) {
-        log('not_joined', { hint: 'Set hub and code (a pairing code from the hub\'s page: Computers, Add) in this plugin\'s config.' })
+        log('not_joined', { hint: 'Not joined to a hub yet: enter its address and a pairing code from its page (Settings, Computers, Add).' })
         return
       }
       kept = await enroll({ hub: config.hub, code: config.code })
@@ -128,12 +198,17 @@ function node (ctx, config) {
     writeConfig(file, kept)
     if (closed) return
     agent = new NodeAgent({ config: kept, log, inbox: path.join(folder, 'inbox') })
+    live.agent = agent
     agent.start()
     return { agent, folder }
   })()
-  started.catch(error => log('start_failed', { error: String(error?.message || error) }))
+  started.catch(error => {
+    live.error = String(error?.message || error)
+    log('start_failed', { error: String(error?.message || error) })
+  })
   ctx.effect(() => () => {
     closed = true
+    live.agent = null
     agent?.stop()
   })
   // DSH's agents, when this DSH has them: the bots living here and tasks from the hub
@@ -153,7 +228,7 @@ function node (ctx, config) {
     scope.effect(() => () => {
       gone = true
       started.then(running => running?.agent.setBrain(null)).catch(() => {})
-      brain?.close().catch(() => {})
+      return brain?.close().catch(() => {})
     })
   })
 }

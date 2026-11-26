@@ -2,7 +2,7 @@
   "name": "dsh-hub-profile",
   "private": true,
   "dependencies": {
-    "dsh-hub": "github:RustColeone/dsh-deepseek-bot"
+    "dsh-hub": "https://github.com/RustColeone/dsh-deepseek-bot/archive/refs/tags/v0.2.0.tar.gz"
   },
   "dsh": {
     "profile": {

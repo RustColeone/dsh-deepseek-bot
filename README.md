@@ -56,32 +56,62 @@ computer says.
 Each computer uses its own DSH sign-in (your DeepSeek account, or an API key). The hub's bots think on the hub's
 account; a bot living on the ROG thinks on the ROG's.
 
-The DSH desktop app has its command line at
-`%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd` (it brings its own Node). A
-profile is the shipped `web` profile plus this plugin:
+### Installing it
+
+In the DSH desktop app: **Plugins → Add plugin**, and give it this address, which needs nothing else on the computer:
 
 ```
-dsh hub --from-default-profile web --dump-config                 # makes <DSH home>/profiles/hub
-dsh plugin --profile hub add github:RustColeone/dsh-deepseek-bot  # this plugin, from GitHub
+https://github.com/RustColeone/dsh-deepseek-bot/archive/refs/tags/v0.2.0.tar.gz
 ```
 
-`github:RustColeone/dsh-deepseek-bot#<commit>` pins a commit, so a later push can't change what runs. To work on the
-plugin itself, add your checkout instead: `"link:C:/path/to/dsh-deepseek-bot"` follows the folder as you edit it.
-The plugin is plain JavaScript, so nothing is built at install time.
+Or on the command line (the desktop app's is
+`%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`, and it brings its own Node):
 
-1. **Hub (the main computer):**
-   1. Make the `hub` profile as above. Its `cordis.patch.yml` can hold the settings from
-      [`examples/hub-profile`](examples/hub-profile) (bots, port, access).
-   2. Run `dsh hub --no-open` (`--port` moves DSH's own web page, which is separate from the hub's, on 4180).
-   3. Open `http://<hub>:4180/setup` with the setup code from its console, or from `setup-code.txt` in
-      `<DSH home>/dsh-hub/hub` (the desktop app shows no console).
-2. **Each other computer:**
-   1. Make a `node` profile the same way.
-   2. Get a pairing code on the page and put it in that profile's `cordis.patch.yml`, as in
-      [`examples/node-profile`](examples/node-profile).
-   3. Run `dsh node --no-open`. After the first run the code isn't needed.
+```
+dsh plugin --profile desktop add https://github.com/RustColeone/dsh-deepseek-bot/archive/refs/tags/v0.2.0.tar.gz
+```
 
-Every option is documented at the top of [`plugin/index.js`](plugin/index.js).
+A release's address never changes what it installs; a newer release is installed by removing this one and adding
+its address. `github:RustColeone/dsh-deepseek-bot` (the newest commit) works too, but needs [Git](https://git-scm.com)
+on the computer. To work on the plugin itself, add your checkout: `"link:C:/path/to/dsh-deepseek-bot"` follows the
+folder as you edit it. The plugin is plain JavaScript, so nothing is built at install time.
+
+A fresh install does nothing until you choose what the computer is. (A computer that already had a hub stays one.)
+
+### Setting it up
+
+Either way writes the same settings (`<DSH home>/dsh-hub/settings.json`), and a running DSH follows them within
+seconds:
+
+- **In DSH:** Plugins → dsh-hub, in the desktop app or DSH's web page. Choose *The hub* or *A computer of a hub*, and
+  the page shows its settings and how it is doing. A hub with no account yet shows its setup code there. A computer
+  joins a hub with the hub's address and a pairing code from that hub's page.
+- **On the command line:** `dsh-hub config` (in the plugin's `bin` folder; on Windows `dsh-hub.cmd`, which uses the
+  desktop app's Node when Node isn't installed):
+
+  ```
+  dsh-hub config                                  # what this computer is, every setting, the setup code
+  dsh-hub config hub                              # make it the hub
+  dsh-hub config join http://192.168.1.10:4180 ABCD-EFGH   # make it a computer of that hub
+  dsh-hub config set node.policy.exec never       # one setting; unset puts it back
+  dsh-hub config off
+  ```
+
+  With the desktop app the folder is `%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-hub\bin`.
+
+Then:
+
+1. **The hub (the main computer):** open `http://<hub>:4180/setup` and make your account with the setup code, which is
+   on the plugin's page, in `dsh-hub config`, in the hub's console and in `<DSH home>/dsh-hub/hub/setup-code.txt`.
+2. **Each other computer:** on the hub's page, ⚙️ Settings → Computers → Add gives a pairing code; join with it as
+   above. After that the code isn't needed.
+
+A profile's `cordis.patch.yml` can set all of this too, as in [`examples/hub-profile`](examples/hub-profile) and
+[`examples/node-profile`](examples/node-profile) (also the hub's bots and model, which the page doesn't set). What
+the profile sets wins, and the page shows it as locked. Every option is documented at the top of
+[`plugin/index.js`](plugin/index.js). A profile of its own for the hub, run with `dsh hub --no-open`, is made from the
+shipped `web` profile: `dsh hub --from-default-profile web --dump-config`, then add the plugin to it with
+`dsh plugin --profile hub add <address>`.
 
 ## Bots that live on your computers
 
@@ -137,7 +167,10 @@ If you're locked out, run `node bin/dsh-hub.js password <name>` on the hub's com
 | [`lib/nodes.js`](lib/nodes.js) | The hub's side of the nodes: pairing, enrolment, connections, jobs |
 | [`lib/node-agent.js`](lib/node-agent.js) | A node: connects out, describes itself (GPUs, tools), runs commands within its own policy |
 | [`lib/store.js`](lib/store.js) | One SQLite file (`hub.db`) |
-| [`plugin/index.js`](plugin/index.js) | The DSH plugin: the hub or node role |
+| [`plugin/index.js`](plugin/index.js) | The DSH plugin: the hub or node role, restarted when its settings change |
+| [`plugin/control.js`](plugin/control.js) | What the computer runs, and the settings page's routes on DSH's own API (its owner only) |
+| [`plugin/client.js`](plugin/client.js) | The settings page under DSH's Plugins |
+| [`lib/settings.js`](lib/settings.js) | The settings file that page and `dsh-hub config` write |
 | [`plugin/runner.js`](plugin/runner.js) | Running a DSH agent: a session made or resumed, a turn streamed, its approvals routed |
 | [`plugin/brain.js`](plugin/brain.js) | The hub's bots as DSH agents |
 | [`plugin/node-brain.js`](plugin/node-brain.js) | A node's own bots and its task agent as DSH agents |
