@@ -4,6 +4,11 @@
   "description": "Make one DeepSeek Harness the hub of your computers: a chat page for your phone and browsers, accounts, and the other computers joined as nodes the agent can run work on.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RustColeone/dsh-deepseek-bot.git"
+  },
+  "homepage": "https://github.com/RustColeone/dsh-deepseek-bot#readme",
   "engines": {
     "node": ">=22.13"
   },

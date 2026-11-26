@@ -2,7 +2,7 @@
   "name": "dsh-hub-profile",
   "private": true,
   "dependencies": {
-    "dsh-hub": "file:C:/Users/LeoNgan/Desktop/Projects/Deepseek-bots/dsh-hub"
+    "dsh-hub": "github:RustColeone/dsh-deepseek-bot"
   },
   "dsh": {
     "profile": {

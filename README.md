@@ -1,4 +1,4 @@
-# dsh-hub
+# dsh-deepseek-bot
 
 One DeepSeek Harness as the hub of your computers. The hub serves a chat page you open from your phone or any
 browser, with accounts. Your other computers join it as **nodes**, and the bots can run work on them: *"use the
@@ -61,9 +61,13 @@ The DSH desktop app has its command line at
 profile is the shipped `web` profile plus this plugin:
 
 ```
-dsh hub --from-default-profile web --dump-config          # makes <DSH home>/profiles/hub
-dsh plugin --profile hub add "link:C:/path/to/dsh-hub"     # link: so it follows this folder
+dsh hub --from-default-profile web --dump-config                 # makes <DSH home>/profiles/hub
+dsh plugin --profile hub add github:RustColeone/dsh-deepseek-bot  # this plugin, from GitHub
 ```
+
+`github:RustColeone/dsh-deepseek-bot#<commit>` pins a commit, so a later push can't change what runs. To work on the
+plugin itself, add your checkout instead: `"link:C:/path/to/dsh-deepseek-bot"` follows the folder as you edit it.
+The plugin is plain JavaScript, so nothing is built at install time.
 
 1. **Hub (the main computer):**
    1. Make the `hub` profile as above. Its `cordis.patch.yml` can hold the settings from
@@ -145,3 +149,7 @@ If you're locked out, run `node bin/dsh-hub.js password <name>` on the hub's com
 - **Notifications** on the phone when a card needs you.
 - **Resuming an upload from a computer.** A download to a computer resumes; an upload from one starts over.
 - **A task outlasting a dropped connection.** If a node loses the hub, its running bot replies and tasks stop.
+
+## License
+
+[MIT](LICENSE). The Nunito font in `static/` is under the [SIL Open Font License](static/NUNITO-OFL.txt).
