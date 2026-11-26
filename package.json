@@ -1,6 +1,6 @@
 {
   "name": "dsh-hub",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Make one DeepSeek Harness the hub of your computers: a chat page for your phone and browsers, accounts, and the other computers joined as nodes the agent can run work on.",
   "type": "module",
   "license": "MIT",

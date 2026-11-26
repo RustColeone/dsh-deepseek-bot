@@ -141,6 +141,7 @@ test('DSH\'s page: the plugin registers its settings, which show the setup code 
     folder: '/home/me/.dsh/dsh-hub', file: '/home/me/.dsh/dsh-hub/settings.json',
     status: { running: true, port: 4181, urls: ['http://localhost:4181/', 'http://192.168.0.5:4181/'], setupCode: 'ABCD-EFGH-JKLM', computers: { online: 1, total: 2 } } })
   assert.match(hub, /ABCD-EFGH-JKLM/)
+  assert.ok(hub.indexOf('This computer') >= 0 && hub.indexOf('This computer') < hub.indexOf('The hub is running'), 'what the computer is comes first')
   assert.match(hub, /http:\/\/192\.168\.0\.5:4181\//)
   assert.match(hub, /1 of 2 computers online/)
   assert.match(hub, /value="4181"/)

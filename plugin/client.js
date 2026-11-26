@@ -257,8 +257,7 @@ window.__ModuleLoader__.load({
       const policy = draft.node.policy
       const nodeJoined = state.role === 'node' && state.status?.joined
       return h('div', { className: 'dh-page' },
-        h(Status, { state, t, onForget: forget }),
-
+        // what this computer is comes first: it decides everything below
         h('section', { className: 'dh-section' },
           h('h3', null, t('role.title'), locked('role') && h('span', { className: 'dh-locked' }, ` · ${t('locked')}`)),
           h('div', { className: 'dh-roles', role: 'radiogroup' }, roles.map(id => h('button', {
@@ -266,6 +265,8 @@ window.__ModuleLoader__.load({
             className: `dh-role${role === id ? ' dh-on' : ''}`, disabled: locked('role') || Boolean(busy),
             onClick: () => { setDraft({ ...draft, role: id }); setDirty(true); setMessage(null) },
           }, h('strong', null, t(`role.${id}`)), h('span', null, t(`role.${id}Help`)))))),
+
+        h(Status, { state, t, onForget: forget }),
 
         role === 'hub' && h('section', { className: 'dh-section' },
           h('h3', null, t('hub.title')),
