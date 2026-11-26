@@ -73,7 +73,8 @@ The plugin is plain JavaScript, so nothing is built at install time.
    1. Make the `hub` profile as above. Its `cordis.patch.yml` can hold the settings from
       [`examples/hub-profile`](examples/hub-profile) (bots, port, access).
    2. Run `dsh hub --no-open` (`--port` moves DSH's own web page, which is separate from the hub's, on 4180).
-   3. Open `http://<hub>:4180/setup` with the setup code from its console.
+   3. Open `http://<hub>:4180/setup` with the setup code from its console, or from `setup-code.txt` in
+      `<DSH home>/dsh-hub/hub` (the desktop app shows no console).
 2. **Each other computer:**
    1. Make a `node` profile the same way.
    2. Get a pairing code on the page and put it in that profile's `cordis.patch.yml`, as in
@@ -108,7 +109,7 @@ the home network.
 
 | | |
 |---|---|
-| First account | Made only with the setup code printed in the hub's console, so nobody on the network can claim an empty hub. |
+| First account | Made only with the setup code shown on the hub's computer (its console, and `setup-code.txt` in its folder until the owner exists), so nobody on the network can claim an empty hub. |
 | Passwords | scrypt (N=2^15, r=8, p=1), compared in constant time. Wrong tries are slowed, then locked out per name, per address, and for every outside address together (never the home network). |
 | Sign-ins | A random 32-byte token in an `HttpOnly; SameSite=Strict` cookie (`Secure` over https). Only its SHA-256 is stored. 30 days from last use. Changing the password signs out everywhere and closes open pages. |
 | Requests | Only home-network and Tailscale addresses (`access: lan`, the default). The Host header must be a home name, which stops DNS rebinding. The Origin must be the page's own. The API takes JSON only. A strict CSP is set. |

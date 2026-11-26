@@ -137,8 +137,12 @@ describe('hub', () => {
     assert.equal((await fetch(base + '/static/../lib/auth.js')).status, 404)
     const wrong = await post('/api/setup', { code: 'AAAA-BBBB-CCCC', name: 'leo', password: 'a fine long password' })
     assert.equal(wrong.status, 400)
-    const right = await post('/api/setup', { code: hub.accounts.setupCode, name: 'leo', password: 'a fine long password' })
+    const codeFile = path.join(folder, 'setup-code.txt')
+    const written = fs.readFileSync(codeFile, 'utf8').split('\n')[0]
+    assert.equal(written, hub.accounts.setupCode)
+    const right = await post('/api/setup', { code: written, name: 'leo', password: 'a fine long password' })
     assert.equal(right.status, 200)
+    assert.equal(fs.existsSync(codeFile), false, 'the code file goes once the owner exists')
     cookie = right.headers.get('set-cookie').split(';')[0]
     assert.match(right.headers.get('set-cookie'), /HttpOnly; SameSite=Strict/)
     const again = await post('/api/setup', { code: 'x', name: 'other', password: 'another long password' })
