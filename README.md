@@ -61,14 +61,14 @@ account; a bot living on the ROG thinks on the ROG's.
 In the DSH desktop app: **Plugins → Add plugin**, and give it this address, which needs nothing else on the computer:
 
 ```
-https://github.com/RustColeone/dsh-deepseek-bot/archive/refs/tags/v0.2.1.tar.gz
+https://github.com/RustColeone/dsh-deepseek-bot/archive/refs/tags/v0.2.2.tar.gz
 ```
 
 Or on the command line (the desktop app's is
 `%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`, and it brings its own Node):
 
 ```
-dsh plugin --profile desktop add https://github.com/RustColeone/dsh-deepseek-bot/archive/refs/tags/v0.2.1.tar.gz
+dsh plugin --profile desktop add https://github.com/RustColeone/dsh-deepseek-bot/archive/refs/tags/v0.2.2.tar.gz
 ```
 
 A release's address never changes what it installs; a newer release is installed by removing this one and adding
