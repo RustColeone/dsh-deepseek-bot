@@ -103,3 +103,30 @@
 .node-bots li { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
 .node-bots li .muted { flex: 1; }
 .add-bot { margin-top: 6px; }
+
+/* the Bots tab: every bot, and one's form */
+.bot-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 14px; }
+.bot-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.bot-text { flex: 1; min-width: 0; }
+.bot-name { font-weight: 800; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.bot-line { font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bot-tag { font-size: .7rem; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-ink, var(--ink)); }
+.bot-tag.is-locked { background: color-mix(in srgb, var(--muted) 20%, transparent); color: var(--ink-2, var(--ink)); }
+.bot-tag.is-private { background: color-mix(in srgb, var(--ink) 10%, transparent); color: var(--ink); }
+.new-bot { display: grid; grid-template-columns: 116px 1fr; gap: 16px 18px; align-items: start; }
+.bot-face { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.bot-face-big .avatar { width: 96px; height: 96px; font-size: 2.2rem; box-shadow: 0 0 0 3px var(--accent); }
+.bot-fields { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.bot-fields h4 { margin: 6px 0 0; }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.preset { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); font: inherit; font-size: .85rem; cursor: pointer; }
+.preset.is-on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 22%, var(--paper)); font-weight: 800; }
+.bot-prompt { width: 100%; box-sizing: border-box; min-height: 110px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); font: inherit; font-size: .9rem; resize: vertical; }
+.check { display: flex; align-items: flex-start; gap: 8px; font-size: .88rem; }
+.check input { margin-top: 3px; }
+.bot-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.bot-actions .is-danger { margin-left: auto; }
+@media (max-width: 760px) {
+  .new-bot { grid-template-columns: 1fr; }
+  .bot-face { flex-direction: row; flex-wrap: wrap; }
+}

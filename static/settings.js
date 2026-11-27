@@ -1,6 +1,7 @@
 "use strict";
-// Settings: your account (password, where you're signed in, theme, sign out), your computers (add one with a pairing
-// code, rename, its policy, remove) and, for the owner, the household's accounts.
+// Settings: for the owner, the bots (make one from a preset, its picture, model, where it lives, who may use it);
+// your account (password, where you're signed in, theme, sign out), your computers (add one with a pairing code,
+// rename, its policy, remove) and, for the owner, the household's accounts.
 (() => {
   const $ = (selector) => document.querySelector(selector);
   const make = (tag, className, text) => {
@@ -174,32 +175,215 @@
     const list = make("ul", "node-bots");
     for (const bot of mine) {
       const item = make("li");
-      item.append(make("strong", "", bot.display), make("span", "muted", bot.description.replace(/\s*\(lives on .*\)$/, "")),
-        button("Remove", "danger", async () => {
-          if (!confirm(`Remove ${bot.display} from ${node.name}? Its chats stay, but it no longer answers.`)) return;
-          try { await api("api/nodes/bots/remove", { node: node.id, name: bot.name.split("/")[1] }); } catch (error) { toast(error.message); }
-        }));
+      item.append(make("strong", "", bot.display), make("span", "muted", bot.description.replace(/\s*\(lives on .*\)$/, "")));
       list.append(item);
     }
     if (!mine.length) list.append(make("li", "muted", "None yet."));
     box.append(list);
-    if (!node.online) return box;
-    const form = make("form", "settings-form add-bot");
-    const display = textInput("text", "display", "e.g. ROG", "off");
-    const about = textInput("text", "description", "one line, shown in the chat", "off");
-    const prompt = make("textarea");
-    Object.assign(prompt, { name: "prompt", rows: 3, placeholder: `Its personality, e.g. "You are ROG, a gaming PC who loves video work."` });
-    form.append(field("Name", display), field("About", about), field("Personality", prompt),
-      make("button", "small-button is-primary", `Add a bot on ${node.name}`));
-    form.onsubmit = async (event) => {
-      event.preventDefault();
-      try {
-        await api("api/nodes/bots", { node: node.id, display: display.value, description: about.value, prompt: prompt.value });
-        toast(`${display.value} lives on ${node.name} now. Start a chat with it.`);
-      } catch (error) { toast(error.message); }
-    };
-    box.append(form);
+    if (node.online) box.append(button(`Add a bot on ${node.name}`, "", () => window.hubSettings.open("bots", { bot: { new: true, home: node.id } })));
     return box;
+  }
+
+  // ---- bots ------------------------------------------------------------------------------------------
+  // Every bot in one place: the hub's (made here, or from the config: locked), and those living on the computers.
+  // `editing`: null (the list), { new: true, home? } or { name } (that bot's form).
+  let editing = null;
+  const face = (bot) => window.hubAvatar ? window.hubAvatar(bot.display, undefined, bot.picture) : make("span", "", bot.display.charAt(0));
+  const modelLabel = (settings, model) => {
+    if (!model) return "DSH's default model";
+    const found = settings.models.find((item) => item.provider === model.provider && item.model === model.model);
+    return found ? `${found.name} (${found.providerName})` : `${model.model} (${model.provider}, not offered now)`;
+  };
+
+  async function bots(body) {
+    if (state().user.role !== "owner") { body.append(make("p", "", "Only the owner manages the bots.")); return; }
+    const settings = await api("api/bots");
+    if (editing) return botForm(body, settings);
+    body.append(make("p", "muted", "The bots you and the people of this hub chat with. A bot thinks with the DSH of the " +
+      "computer it lives on: the hub's, or that computer's own sign-in."));
+    const list = make("div", "bot-list");
+    const row = (bot, tags, line, actions) => {
+      const item = make("div", "bot-item");
+      const text = make("div", "bot-text");
+      const title = make("div", "bot-name", bot.display);
+      for (const [label, kind] of tags) title.append(make("span", `bot-tag${kind ? ` is-${kind}` : ""}`, label));
+      text.append(title, make("div", "bot-line muted", line));
+      item.append(face(bot), text, ...actions);
+      list.append(item);
+    };
+    for (const bot of settings.bots) {
+      const tags = [["on the hub", ""]];
+      if (bot.locked) tags.push(["from the config", "locked"]);
+      if (bot.shared === "owner") tags.push(["only you", "private"]);
+      row(bot, tags, [bot.description, modelLabel(settings, bot.model), bot.computers === false ? "no computers" : ""].filter(Boolean).join(" · "),
+        [button(bot.locked ? "Picture" : "Edit", "", () => { editing = { name: bot.name }; render(); })]);
+    }
+    for (const bot of settings.living) {
+      row(bot, [[`lives on ${bot.nodeName}`, ""], ...(bot.online ? [] : [["offline", "locked"]])],
+        [bot.description.replace(/\s*\(lives on .*\)$/, ""), `${bot.nodeName}'s own DSH and model`].filter(Boolean).join(" · "),
+        [button("Edit", "", () => { editing = { name: bot.name }; render(); })]);
+    }
+    if (!settings.bots.length && !settings.living.length) list.append(make("p", "muted", "No bots yet."));
+    body.append(list, button("＋ New bot", "primary", () => { editing = { new: true }; render(); }));
+  }
+
+  function botForm(body, settings) {
+    const current = editing.new ? null
+      : settings.bots.find((bot) => bot.name === editing.name) || settings.living.find((bot) => bot.name === editing.name);
+    if (!editing.new && !current) { editing = null; return bots(body); }
+    const living = current ? current.name.startsWith("@") : Boolean(editing.home);
+    const locked = Boolean(current?.locked);
+    const draft = {
+      display: current?.display || "", description: (current?.description || "").replace(/\s*\(lives on .*\)$/, ""),
+      prompt: current?.prompt || "", preset: current?.preset || "", picture: current?.picture || null,
+      model: current?.model || null, computers: current ? current.computers !== false : true,
+      shared: current?.shared || "everyone", home: editing.home || "",
+    };
+    body.append(make("h3", "", current ? (locked ? `${current.display} (from the config)` : `Edit ${current.display}`) : "New bot"));
+    if (locked) body.append(make("p", "muted", "This bot is set in the hub's DSH profile (cordis.patch.yml): change it there. Its picture is yours to set here."));
+    if (current && living && current.prompt === undefined) {
+      body.append(make("p", "muted", `It lives on ${current.nodeName}. Its personality is kept there: leave it empty to keep it as it is.`));
+    }
+    const form = make("div", "new-bot");
+
+    // the picture: shown, uploaded, taken away
+    const side = make("div", "bot-face");
+    const preview = make("div", "bot-face-big");
+    const showFace = () => preview.replaceChildren(face({ display: draft.display || "?", picture: draft.picture }));
+    showFace();
+    const file = make("input");
+    Object.assign(file, { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/avif", hidden: true });
+    file.onchange = async () => {
+      const chosen = file.files?.[0];
+      if (!chosen) return;
+      try {
+        const response = await fetch("api/bots/picture", { method: "POST", headers: { "Content-Type": chosen.type || "application/octet-stream" }, body: chosen });
+        const answer = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(answer.error || `refused (${response.status})`);
+        draft.picture = answer.file.id;
+        showFace();
+      } catch (error) { toast(error.message); }
+      file.value = "";
+    };
+    side.append(preview, file, button("Upload…", "", () => file.click()), button("No picture", "", () => { draft.picture = null; showFace(); }));
+    form.append(side);
+
+    const fields = make("div", "bot-fields");
+    const name = textInput("text", "display", "e.g. Mochi", "off");
+    name.value = draft.display;
+    name.disabled = locked;
+    name.oninput = () => { draft.display = name.value; showFace(); };
+    fields.append(field("Name", name));
+
+    if (!current) {
+      // where it lives: the hub, or a computer running DSH (it thinks with that computer's own sign-in)
+      const home = make("select");
+      home.append(Object.assign(make("option", "", "The hub (this computer)"), { value: "" }));
+      for (const computer of settings.computers) {
+        const option = make("option", "", computer.online ? computer.name : `${computer.name} (offline)`);
+        option.value = computer.id;
+        option.disabled = !computer.online;
+        home.append(option);
+      }
+      home.value = draft.home;
+      home.onchange = () => { editing = { new: true, home: home.value }; draft.home = home.value; render(); };
+      fields.append(field("Lives on", home));
+    }
+
+    const about = textInput("text", "description", "one line, shown in the chat", "off");
+    about.value = draft.description;
+    about.disabled = locked;
+    fields.append(field("About", about));
+
+    // a preset fills the personality in; it is the bot's own from then on
+    const prompt = make("textarea", "bot-prompt");
+    Object.assign(prompt, { rows: 6, placeholder: "Its personality: who it is, how it talks, what it is good at.", value: draft.prompt });
+    prompt.disabled = locked;
+    if (!locked) {
+      const presets = make("div", "presets");
+      for (const preset of settings.presets) {
+        const chip = make("button", `preset${draft.preset === preset.id ? " is-on" : ""}`, preset.label);
+        chip.type = "button";
+        chip.title = preset.about;
+        chip.onclick = () => {
+          const filled = preset.prompt.replaceAll("{name}", name.value.trim() || "the assistant");
+          if (prompt.value.trim() && prompt.value !== filled && !confirm(`Replace the personality with ${preset.label}'s?`)) return;
+          prompt.value = filled;
+          draft.preset = preset.id;
+          for (const other of presets.children) other.classList.toggle("is-on", other === chip);
+        };
+        presets.append(chip);
+      }
+      fields.append(make("h4", "", "Start from"), presets);
+    }
+    fields.append(make("h4", "", "Personality"), prompt);
+
+    const checks = [];
+    if (!living) {
+      const model = make("select");
+      model.append(Object.assign(make("option", "", "DSH's default model"), { value: "" }));
+      const groups = new Map();
+      for (const item of settings.models) {
+        if (!groups.has(item.providerName)) {
+          const group = make("optgroup");
+          group.label = item.providerName;
+          groups.set(item.providerName, group);
+          model.append(group);
+        }
+        const option = make("option", "", item.name);
+        option.value = JSON.stringify({ provider: item.provider, model: item.model });
+        groups.get(item.providerName).append(option);
+      }
+      if (draft.model && !settings.models.some((item) => item.provider === draft.model.provider && item.model === draft.model.model)) {
+        const option = make("option", "", modelLabel(settings, draft.model));
+        option.value = JSON.stringify(draft.model);
+        model.append(option);
+      }
+      model.value = draft.model ? JSON.stringify(draft.model) : "";
+      model.disabled = locked;
+      fields.append(field("Thinks with", model));
+      checks.push(() => { draft.model = model.value ? JSON.parse(model.value) : null; });
+
+      const tick = (label, on, set) => {
+        const box = make("input");
+        Object.assign(box, { type: "checkbox", checked: on, disabled: locked });
+        const line = make("label", "check");
+        line.append(box, make("span", "", label));
+        fields.append(line);
+        checks.push(() => set(box.checked));
+      };
+      tick("May use your computers (asking you first, as each computer's policy says)", draft.computers, (value) => { draft.computers = value; });
+      tick("Everyone on this hub may chat with it (else only you)", draft.shared !== "owner", (value) => { draft.shared = value ? "everyone" : "owner"; });
+    } else {
+      fields.append(make("p", "muted", "It thinks with that computer's own DSH and its default model, and works on that computer."));
+    }
+
+    const actions = make("div", "bot-actions");
+    const save = button(current ? "Save" : `Create`, "primary", async () => {
+      for (const take of checks) take();
+      const payload = locked ? { picture: draft.picture }
+        : { display: name.value.trim(), description: about.value.trim(), prompt: prompt.value.trim(), preset: draft.preset, picture: draft.picture,
+            ...(living ? {} : { model: draft.model, computers: draft.computers, shared: draft.shared }) };
+      if (living && current && !payload.prompt) delete payload.prompt;
+      try {
+        if (current) await api("api/bots/update", { name: current.name, ...payload });
+        else await api("api/bots", { ...payload, ...(draft.home ? { home: draft.home } : {}) });
+        toast(current ? `Saved ${payload.display || current.display}.` : `${payload.display} is here: start a chat with it.`);
+        editing = null;
+        render();
+      } catch (error) { toast(error.message); }
+    });
+    actions.append(save, button("Cancel", "", () => { editing = null; render(); }));
+    if (current && !locked) {
+      actions.append(button("Remove", "danger", async () => {
+        if (!confirm(`Remove ${current.display}? Chats with it stay, but it no longer answers.`)) return;
+        try { await api("api/bots/remove", { name: current.name }); editing = null; render(); } catch (error) { toast(error.message); }
+      }));
+    }
+    fields.append(actions);
+    form.append(fields);
+    body.append(form);
+    setTimeout(() => (locked ? null : name).focus?.(), 0);
   }
 
   // ---- people ----------------------------------------------------------------------------------------
@@ -231,7 +415,7 @@
   }
 
   // ---- the dialog ------------------------------------------------------------------------------------
-  const TABS = { account: ["Account", account], computers: ["Computers", computers], people: ["People", people] };
+  const TABS = { bots: ["Bots", bots], account: ["Account", account], computers: ["Computers", computers], people: ["People", people] };
   async function render(options = {}) {
     const owner = state()?.user.role === "owner";
     const tabs = $("#settings-tabs");
@@ -241,7 +425,7 @@
       const node = make("button", `tab${key === tab ? " is-current" : ""}`, label);
       node.type = "button";
       node.setAttribute("role", "tab");
-      node.onclick = () => { tab = key; render(); };
+      node.onclick = () => { tab = key; editing = null; render(); };
       tabs.append(node);
     }
     const body = $("#settings-body");
@@ -251,8 +435,9 @@
   }
   const dialog = $("#settings");
   window.hubSettings = {
-    open (which = "account", options = {}) { tab = which; dialog.hidden = false; render(options); },
-    refresh () { if (!dialog.hidden && tab === "computers") render(); },
+    open (which = "account", options = {}) { tab = which; editing = options.bot ?? null; dialog.hidden = false; render(options); },
+    // the bots' list follows changes made elsewhere; a form being filled in is left alone
+    refresh () { if (!dialog.hidden && (tab === "computers" || (tab === "bots" && !editing))) render(); },
   };
   $("#settings-close").onclick = () => { dialog.hidden = true; };
   dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.hidden = true; });

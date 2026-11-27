@@ -61,14 +61,14 @@ account; a bot living on the ROG thinks on the ROG's.
 In the DSH desktop app: **Plugins → Add plugin**, and give it this address, which needs nothing else on the computer:
 
 ```
-https://github.com/RustColeone/dsh-deepseek-bot/archive/refs/tags/v0.2.2.tar.gz
+https://github.com/RustColeone/dsh-deepseek-bot/archive/refs/tags/v0.3.0.tar.gz
 ```
 
 Or on the command line (the desktop app's is
 `%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`, and it brings its own Node):
 
 ```
-dsh plugin --profile desktop add https://github.com/RustColeone/dsh-deepseek-bot/archive/refs/tags/v0.2.2.tar.gz
+dsh plugin --profile desktop add https://github.com/RustColeone/dsh-deepseek-bot/archive/refs/tags/v0.3.0.tar.gz
 ```
 
 A release's address never changes what it installs; a newer release is installed by removing this one and adding
@@ -113,13 +113,30 @@ the profile sets wins, and the page shows it as locked. Every option is document
 shipped `web` profile: `dsh hub --from-default-profile web --dump-config`, then add the plugin to it with
 `dsh plugin --profile hub add <address>`.
 
+## Your bots
+
+The owner makes and changes the bots on the page: ⚙️ Settings → **Bots**. Each one has:
+
+- **A name and a picture** (uploaded; without one it shows its initial).
+- **A personality**, started from a preset (Assistant, Coder, Study buddy, Video helper, Translator) or written from
+  scratch. A preset only fills the text in; it is the bot's to change from then on.
+- **A model** to think with, from the models DSH offers (every provider it has: DeepSeek, and whatever other
+  plugins add), or DSH's default.
+- **Where it lives**: the hub, or one of your computers running DSH (below).
+- **Whether it may use your computers** (still asking first, as each computer's policy says), and **who may chat
+  with it**: everyone on the hub, or only you.
+
+A fresh hub starts with one bot, DeepSeek. Bots listed in the hub profile's config (`bots:`) show on the page too,
+locked: only their picture changes there. An edited bot's next answer, in every chat, is the new one's; its chats
+keep their memory.
+
 ## Bots that live on your computers
 
 A computer running DSH as a node has agents of its own, which think with that computer's sign-in and work with its
 own shell, files and web:
 
-- **Its bots.** Add one from the page (⚙️ Settings → Computers → the computer → Add a bot here), or list them in its
-  profile's config (`bots:`). It then shows up as a chat member like the hub's bots: chat with it alone, or bring it
+- **Its bots.** Add one from the page (⚙️ Settings → Bots → New bot, living on that computer; or Computers → Add a
+  bot on it), or list them in its profile's config (`bots:`). It then shows up as a chat member like the hub's bots: chat with it alone, or bring it
   into a group chat with @mentions. A file attached for it is copied to its computer first, and it can post files
   from there into the chat (`chat_send_file`). Its DSH sessions are kept on its computer; the chat itself is kept on
   the hub.
@@ -166,6 +183,8 @@ If you're locked out, run `node bin/dsh-hub.js password <name>` on the hub's com
 | [`lib/tools.js`](lib/tools.js) | The computer tools any brain gets: `computers_list`, `computer_run`, `computer_send_file`, `computer_get_file`, `computer_job`, `computer_job_cancel` |
 | [`lib/nodes.js`](lib/nodes.js) | The hub's side of the nodes: pairing, enrolment, connections, jobs |
 | [`lib/node-agent.js`](lib/node-agent.js) | A node: connects out, describes itself (GPUs, tools), runs commands within its own policy |
+| [`lib/bots.js`](lib/bots.js) | The hub's bots: made on the page or the config's, checked, and who may chat with them |
+| [`lib/presets.js`](lib/presets.js) | The presets a new bot's personality starts from |
 | [`lib/store.js`](lib/store.js) | One SQLite file (`hub.db`) |
 | [`plugin/index.js`](plugin/index.js) | The DSH plugin: the hub or node role, restarted when its settings change |
 | [`plugin/control.js`](plugin/control.js) | What the computer runs, and the settings page's routes on DSH's own API (its owner only) |

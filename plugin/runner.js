@@ -35,7 +35,8 @@ export async function agentRunner (ctx, options = {}) {
   const live = new Map() // session id -> agent
   const handles = new Map() // session id -> the AgentHandle that can dispose it
   const current = new Map() // agent id -> the turn it is in: { tools, sink, approve, calls, text, last, done }
-  const model = () => options.model?.provider ? { ...options.model } : { ...ctx.agentDefaultModel.currentSelection() }
+  // the model an agent thinks with: its own (a bot's choice), else the runner's, else DSH's default
+  const model = (own) => own?.provider ? { ...own } : options.model?.provider ? { ...options.model } : { ...ctx.agentDefaultModel.currentSelection() }
 
   /** A hub tool (plain JSON-Schema parameters, run(args, signal)) as a DSH tool, run through the turn's own tools. */
   function dshTool (tool) {
@@ -71,15 +72,15 @@ export async function agentRunner (ctx, options = {}) {
 
   /**
    * The agent of a session: the live one, else resumed, else a new session (`prefix`-uuid). Returns { agent, sessionId }.
-   * `title` names a new session in DSH's own list of sessions.
+   * `title` names a new session in DSH's own list of sessions; `model` ({ provider, model }) is the agent's own.
    */
-  async function agentFor ({ sessionId, prefix = 'hub', presetId, toolDefinitions, cwd, permission, title }) {
+  async function agentFor ({ sessionId, prefix = 'hub', presetId, toolDefinitions, cwd, permission, title, model: own }) {
     if (sessionId && live.has(sessionId)) return { agent: live.get(sessionId), sessionId }
     if (sessionId) {
       try {
         const found = await ctx.sessionQuery.observeSession(sessionId)
         found[Symbol.dispose]?.()
-        const handle = await ctx.agents.resume({ resumeSessionId: sessionId, agentOptions: model(), setup: await setup(presetId, toolDefinitions) })
+        const handle = await ctx.agents.resume({ resumeSessionId: sessionId, agentOptions: model(own), setup: await setup(presetId, toolDefinitions) })
         live.set(sessionId, handle.agent)
         handles.set(sessionId, handle)
         return { agent: handle.agent, sessionId }
@@ -89,7 +90,7 @@ export async function agentRunner (ctx, options = {}) {
     }
     const fresh = `${prefix}-${crypto.randomUUID()}`
     const handle = await ctx.agents.create({
-      sessionId: fresh, meta: { cwd, agentPreset: presetId }, agentOptions: model(), setup: await setup(presetId, toolDefinitions),
+      sessionId: fresh, meta: { cwd, agentPreset: presetId }, agentOptions: model(own), setup: await setup(presetId, toolDefinitions),
     })
     try { if (permission) ctx.permissionPresets?.set(handle.agent.session, permission) } catch (error) {
       log('permission_preset_failed', { error: String(error?.message || error) })

@@ -85,6 +85,7 @@ export async function nodeBrain (ctx, options) {
   fs.mkdirSync(workspace, { recursive: true })
   const runner = await agentRunner(ctx, { createUserMessage: options.createUserMessage, model: options.model, log })
   const presets = new Map() // preset id -> off()
+  const talked = new Map() // bot name -> its sessions this brain has run (an edit lets their live agents go)
 
   const fromConfig = (options.bots || []).map(bot => ({ ...bot, name: bot.name || slug(bot.display), own: true }))
   let added = []
@@ -124,6 +125,24 @@ export async function nodeBrain (ctx, options) {
       return { name, display, description: bot.description }
     },
 
+    /** A bot added from the hub, changed: its name as shown, its line, its personality (its id stays). */
+    async update (name, { display, description, prompt } = {}) {
+      const bot = added.find(item => item.name === name)
+      if (!bot) throw new Error(fromConfig.some(item => item.name === name) ? "that bot is in this computer's own config" : `no bot ${name} lives here`)
+      if (display !== undefined) {
+        const shown = String(display).trim()
+        if (!shown) throw new Error('a bot needs a name')
+        bot.display = shown
+      }
+      if (description !== undefined) bot.description = String(description)
+      if (prompt !== undefined) bot.prompt = String(prompt)
+      await register(PRESET + name, `${bot.display} (lives here)`, botPersona(bot, options))
+      for (const sessionId of talked.get(name) ?? []) await runner.forget(sessionId)
+      save()
+      log('bot_changed', { name })
+      return { name, display: bot.display, description: bot.description }
+    },
+
     async remove (name) {
       const index = added.findIndex(bot => bot.name === name)
       if (index < 0) throw new Error(fromConfig.some(bot => bot.name === name) ? 'that bot is in this computer\'s own config' : `no bot ${name} lives here`)
@@ -143,6 +162,10 @@ export async function nodeBrain (ctx, options) {
         toolDefinitions: [SEND_FILE], cwd: workspace, permission: options.permission,
         title: bot ? `${bot.display} · chat from the hub` : `Task from the hub: ${text.split('\n')[0].slice(0, 60)}`,
       })
+      if (bot) {
+        if (!talked.has(bot.name)) talked.set(bot.name, new Set())
+        talked.get(bot.name).add(sessionId)
+      }
       const tools = [{ ...SEND_FILE, run: async ({ path: where }) => {
         const sent = await postFile(where)
         return { posted: true, name: sent.file?.name, size: sent.size }

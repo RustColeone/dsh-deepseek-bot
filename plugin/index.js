@@ -22,8 +22,8 @@
 //       title: Hub
 //       maxUploadMB: 2048
 //       folder: <DSH home>/dsh-hub  # where the hub keeps its accounts, chats and files (and settings.json)
-//       bots:                    # who talks; default: one, DeepSeek
-//         - { name: deepseek, display: DeepSeek, description: ..., prompt: ... }
+//       bots:                    # bots of the config's (locked on the page); others are made on the hub's page
+//         - { name: deepseek, display: DeepSeek, description: ..., prompt: ..., model: { provider, model } }
 //       model: { provider: ..., model: ... }   # default: DSH's default model
 //       permission: workspace-write
 //
@@ -60,7 +60,7 @@ import { nodeBrain } from './node-brain.js'
 export const name = 'dsh-hub'
 export const inject = []
 
-const HUB_SERVICES = ['agents', 'agentPresets', 'tools', 'approval', 'sessionQuery', 'agentDefaultModel']
+const HUB_SERVICES = ['agents', 'agentPresets', 'tools', 'approval', 'sessionQuery', 'agentDefaultModel', 'llm']
 const NODE_SERVICES = ['agents', 'agentPresets', 'approval', 'sessionQuery', 'agentDefaultModel']
 
 async function home () {
@@ -142,7 +142,7 @@ function hub (ctx, config, folder, live) {
   let closed = false
   const started = (async () => {
     const brain = await dshBrain(ctx, {
-      bots: config.bots, title: config.title ?? 'Hub', model: config.model, permission: config.permission ?? 'workspace-write',
+      title: config.title ?? 'Hub', model: config.model, permission: config.permission ?? 'workspace-write',
       workspace: config.workspace ?? path.join(folder, 'workspace'), log,
       toolDefinitions: computerTools(null).map(({ name, description, parameters }) => ({ name, description, parameters })),
     })
@@ -151,7 +151,7 @@ function hub (ctx, config, folder, live) {
       hubRunning = await startHub({
         folder: path.join(folder, 'hub'), host: config.host, port: config.port, access: config.access,
         hostnames: config.hostnames, trustProxy: config.trustProxy, tls: config.tls, title: config.title,
-        maxUploadMB: config.maxUploadMB, brain, log,
+        maxUploadMB: config.maxUploadMB, bots: config.bots, brain, log,
       })
     } catch (error) {
       await brain.close?.()

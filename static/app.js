@@ -44,11 +44,21 @@
     return node;
   }
   const initial = (name) => (String(name || "?").trim().charAt(0) || "?").toUpperCase();
-  function avatar(name, key = keyOf(name)) {
+  /** A face: the bot's picture when it has one (`picture`: a file id, else looked up by its name), else its initial. */
+  function avatar(name, key = keyOf(name), picture = state.bots?.find((bot) => bot.display === name)?.picture) {
     const node = paint(make("div", "avatar"), key);
-    node.textContent = initial(name);
+    if (picture) {
+      const image = make("img");
+      image.alt = "";
+      image.src = `files/${picture}`;
+      node.classList.add("has-picture");
+      node.append(image);
+    } else {
+      node.textContent = initial(name);
+    }
     return node;
   }
+  window.hubAvatar = avatar;
   const chatOf = (id) => state.conversations.find((chat) => chat.id === id);
   const botsOf = (chat) => (chat?.bots ? state.bots.filter((bot) => chat.bots.includes(bot.name)) : state.bots);
   const isDirect = (chat) => botsOf(chat).length === 1 && state.bots.length > 1;
@@ -283,7 +293,9 @@
     $("#chat-sub").textContent = members.length === 1 ? `with ${members[0].display}` : members.map((bot) => bot.display).join(", ");
     document.title = `${chat ? chat.title + " · " : ""}${state.title}`;
     $("#empty-title").textContent = members.length === 1 ? `Just you and ${members[0].display}.` : `${members.map((bot) => bot.display).join(", ")} are here.`;
-    input.placeholder = members.length === 1 ? `Message ${members[0].display}…` : "Message everyone… (@ someone to ask them)";
+    // a phone's box is narrow: the hint about @ only where it fits
+    const roomy = window.matchMedia("(min-width: 600px)").matches;
+    input.placeholder = members.length === 1 ? `Message ${members[0].display}…` : roomy ? "Message everyone… (@ someone to ask them)" : "Message everyone…";
   }
   function move(id, target, below) {
     const order = state.conversations.map((chat) => chat.id).filter((item) => item !== id);
